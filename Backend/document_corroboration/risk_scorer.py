@@ -71,6 +71,15 @@ class RiskScorer:
 
     def _assess_document_risk(self, analysis: Dict) -> Dict[str, Any]:
         """Assess risk from document processing analysis"""
+        # Ensure analysis is a dictionary
+        if not isinstance(analysis, dict):
+            return {
+                "component": "document_processing",
+                "score": 80,
+                "severity": "HIGH",
+                "issues": ["Invalid analysis format - expected dictionary"]
+            }
+
         # This would integrate with your RAG analysis
         risk_score = 0
         issues = []
@@ -78,7 +87,7 @@ class RiskScorer:
         # Check if document was processed successfully
         if analysis.get('error'):
             risk_score = 80
-            issues.append("Document processing failed")
+            issues.append(f"Document processing failed: {analysis.get('error')}")
             severity = "HIGH"
         else:
             # Analyze RAG query results
@@ -108,6 +117,16 @@ class RiskScorer:
 
     def _assess_format_risk(self, validation: Dict) -> Dict[str, Any]:
         """Assess risk from format validation"""
+        # Ensure validation is a dictionary
+        if not isinstance(validation, dict):
+            return {
+                "component": "format_validation",
+                "score": 80,
+                "severity": "HIGH",
+                "issues": ["Invalid validation format - expected dictionary"],
+                "total_issues": 0
+            }
+
         risk_score = validation.get('risk_score', 0)
         total_issues = validation.get('total_issues', 0)
 
@@ -116,8 +135,12 @@ class RiskScorer:
         issues = []
         if validation.get('issues'):
             for category, category_issues in validation['issues'].items():
-                for issue in category_issues:
-                    issues.append(f"{category}: {issue.get('description', 'Unknown issue')}")
+                if isinstance(category_issues, list):
+                    for issue in category_issues:
+                        if isinstance(issue, dict):
+                            issues.append(f"{category}: {issue.get('description', 'Unknown issue')}")
+                        else:
+                            issues.append(f"{category}: {str(issue)}")
 
         return {
             "component": "format_validation",
@@ -129,6 +152,15 @@ class RiskScorer:
 
     def _assess_image_risk(self, analysis: Dict) -> Dict[str, Any]:
         """Assess risk from image analysis"""
+        # Ensure analysis is a dictionary
+        if not isinstance(analysis, dict):
+            return {
+                "component": "image_analysis",
+                "score": 80,
+                "severity": "HIGH",
+                "issues": ["Invalid analysis format - expected dictionary"]
+            }
+
         # Invert authenticity score to get risk score
         authenticity = analysis.get('authenticity_score', 100)
         risk_score = 100 - authenticity
@@ -136,13 +168,22 @@ class RiskScorer:
         severity = "HIGH" if risk_score > 60 else "MEDIUM" if risk_score > 30 else "LOW"
 
         issues = analysis.get('issues', [])
-        issue_descriptions = [issue.get('description', '') for issue in issues]
+        issue_descriptions = []
 
-        if analysis.get('tampering_indicators', {}).get('tampering_detected'):
-            issue_descriptions.append("Image tampering detected")
+        if isinstance(issues, list):
+            for issue in issues:
+                if isinstance(issue, dict):
+                    issue_descriptions.append(issue.get('description', ''))
+                else:
+                    issue_descriptions.append(str(issue))
 
-        if analysis.get('ai_detection', {}).get('likely_ai_generated'):
-            issue_descriptions.append("Image likely AI-generated")
+        if isinstance(analysis.get('tampering_indicators'), dict):
+            if analysis['tampering_indicators'].get('tampering_detected'):
+                issue_descriptions.append("Image tampering detected")
+
+        if isinstance(analysis.get('ai_detection'), dict):
+            if analysis['ai_detection'].get('likely_ai_generated'):
+                issue_descriptions.append("Image likely AI-generated")
 
         return {
             "component": "image_analysis",
@@ -170,12 +211,12 @@ class RiskScorer:
     def _get_recommendation(self, status: str, risk_score: float) -> str:
         """Get recommendation based on status"""
         recommendations = {
-            "APPROVED": "Document meets all requirements and can be approved.",
-            "APPROVED_WITH_NOTES": "Document is acceptable but has minor issues that should be noted.",
-            "REVIEW_REQUIRED": "Document requires manual review by compliance officer before proceeding.",
-            "REJECTED": "Document does not meet requirements and should be rejected."
+            "APPROVED": f"Document meets all requirements and can be approved. (Risk Score: {risk_score:.1f})",
+            "APPROVED_WITH_NOTES": f"Document is acceptable but has minor issues that should be noted. (Risk Score: {risk_score:.1f})",
+            "REVIEW_REQUIRED": f"Document requires manual review by compliance officer before proceeding. (Risk Score: {risk_score:.1f})",
+            "REJECTED": f"Document does not meet requirements and should be rejected. (Risk Score: {risk_score:.1f})"
         }
-        return recommendations.get(status, "Unknown status")
+        return recommendations.get(status, f"Unknown status (Risk Score: {risk_score:.1f})")
 
     def generate_report(
         self,

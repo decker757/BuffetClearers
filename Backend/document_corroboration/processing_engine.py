@@ -110,7 +110,23 @@ class RAGProcessor:
                 "Is this document complete, properly formatted, and compliant?",
                 mode="hybrid"
             )
-            return json.dumps(result, indent=2)
+
+            # Ensure result is serializable
+            if result is None:
+                return json.dumps({"error": "No result from query", "status": "failed"}, indent=2)
+
+            # If result is already a string, return it
+            if isinstance(result, str):
+                # Try to parse and re-serialize to ensure valid JSON
+                try:
+                    parsed = json.loads(result)
+                    return json.dumps(parsed, indent=2)
+                except:
+                    # If not JSON, wrap it
+                    return json.dumps({"response": result}, indent=2)
+
+            # Otherwise serialize the object
+            return json.dumps(result, indent=2, default=str)
         finally:
             # Clean up converted file
             if converted_file and os.path.exists(converted_file):

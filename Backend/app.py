@@ -136,9 +136,22 @@ def validate_document():
         try:
             processor = RAGProcessor()
             rag_result = asyncio.run(processor.process_document(file_path))
-            document_analysis = json.loads(rag_result)
+            print(f"RAG result type: {type(rag_result)}")
+            print(f"RAG result preview: {str(rag_result)[:200]}")
+
+            # rag_result is already a JSON string, parse it
+            if isinstance(rag_result, str):
+                document_analysis = json.loads(rag_result)
+            else:
+                document_analysis = rag_result
+        except json.JSONDecodeError as e:
+            print(f"Document processing JSON error: {e}")
+            print(f"Failed to parse: {str(rag_result)[:500]}")
+            document_analysis = {"error": f"Invalid JSON response: {str(e)}"}
         except Exception as e:
-            print(f"Document processing error: {e}")
+            print(f"Document processing error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             document_analysis = {"error": str(e)}
 
         # Component 2: Format Validation
@@ -186,7 +199,13 @@ def validate_document():
         return jsonify(report), 200
 
     except Exception as e:
-        return jsonify({'error': f'Document validation failed: {str(e)}'}), 500
+        print(f"FATAL ERROR in validate_document: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'error': f'Document validation failed: {str(e)}',
+            'error_type': type(e).__name__
+        }), 500
 
 
 @app.route('/api/validate/format', methods=['POST'])
