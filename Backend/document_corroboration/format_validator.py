@@ -11,6 +11,11 @@ import os
 from typing import Dict, List, Any
 from collections import Counter
 import json
+try:
+    import fitz  # PyMuPDF for PDF font analysis
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
 
 
 class FormatValidator:
@@ -34,9 +39,14 @@ class FormatValidator:
         content_issues = self._check_content_validation(extracted_text)
         structure_issues = self._check_structure(extracted_text)
 
+        # PDF-specific checks
+        font_issues = []
+        if file_path.lower().endswith('.pdf'):
+            font_issues = self._analyze_pdf_fonts(file_path)
+
         # Calculate risk score
         self.risk_score = self._calculate_risk_score(
-            formatting_issues, content_issues, structure_issues
+            formatting_issues, content_issues, structure_issues, font_issues
         )
 
         return {
@@ -46,9 +56,10 @@ class FormatValidator:
             "issues": {
                 "formatting": formatting_issues,
                 "content": content_issues,
-                "structure": structure_issues
+                "structure": structure_issues,
+                "fonts": font_issues
             },
-            "total_issues": len(formatting_issues) + len(content_issues) + len(structure_issues),
+            "total_issues": len(formatting_issues) + len(content_issues) + len(structure_issues) + len(font_issues),
             "recommendations": self._generate_recommendations()
         }
 
@@ -227,8 +238,131 @@ class FormatValidator:
 
         return issues
 
+    def _analyze_pdf_fonts(self, file_path: str) -> List[Dict[str, str]]:
+        """
+        Analyze fonts in PDF to detect irregular usage and copy-paste forgery
+        """
+        issues = []
+
+        if not PYMUPDF_AVAILABLE:
+            return [{
+                "type": "font_analysis_unavailable",
+                "severity": "LOW",
+                "description": "Install PyMuPDF (pip install PyMuPDF) for font analysis"
+            }]
+
+        try:
+            doc = fitz.open(file_path)
+            font_usage = {}  # Track font usage across document
+            font_sizes = []
+            page_fonts = []  # Fonts per page
+
+            for page_num, page in enumerate(doc):
+                page_font_set = set()
+                blocks = page.get_text("dict")["blocks"]
+
+                for block in blocks:
+                    if "lines" in block:
+                        for line in block["lines"]:
+                            for span in line["spans"]:
+                                font_name = span.get("font", "Unknown")
+                                font_size = span.get("size", 0)
+
+                                # Track font usage
+                                if font_name not in font_usage:
+                                    font_usage[font_name] = {
+                                        "count": 0,
+                                        "sizes": [],
+                                        "pages": set()
+                                    }
+
+                                font_usage[font_name]["count"] += 1
+                                font_usage[font_name]["sizes"].append(font_size)
+                                font_usage[font_name]["pages"].add(page_num)
+                                page_font_set.add(font_name)
+                                font_sizes.append(font_size)
+
+                page_fonts.append(page_font_set)
+
+            doc.close()
+
+            # Analysis 1: Too many different fonts (copy-paste indicator)
+            unique_fonts = len(font_usage)
+            if unique_fonts > 5:
+                issues.append({
+                    "type": "excessive_fonts",
+                    "severity": "HIGH",
+                    "count": unique_fonts,
+                    "fonts": list(font_usage.keys()),
+                    "description": f"Document uses {unique_fonts} different fonts - possible copy-paste forgery"
+                })
+            elif unique_fonts > 3:
+                issues.append({
+                    "type": "multiple_fonts",
+                    "severity": "MEDIUM",
+                    "count": unique_fonts,
+                    "fonts": list(font_usage.keys()),
+                    "description": f"Document uses {unique_fonts} different fonts - verify consistency"
+                })
+
+            # Analysis 2: Inconsistent font sizes
+            if font_sizes:
+                from collections import Counter
+                size_counts = Counter([round(size, 1) for size in font_sizes])
+
+                if len(size_counts) > 10:
+                    issues.append({
+                        "type": "inconsistent_font_sizes",
+                        "severity": "MEDIUM",
+                        "unique_sizes": len(size_counts),
+                        "description": f"{len(size_counts)} different font sizes detected - possible editing"
+                    })
+
+            # Analysis 3: Font changes mid-page (suspicious)
+            for page_num, fonts_on_page in enumerate(page_fonts):
+                if len(fonts_on_page) > 3:
+                    issues.append({
+                        "type": "mixed_fonts_on_page",
+                        "severity": "MEDIUM",
+                        "page": page_num + 1,
+                        "fonts": list(fonts_on_page),
+                        "description": f"Page {page_num + 1} uses {len(fonts_on_page)} different fonts"
+                    })
+
+            # Analysis 4: Embedded vs System fonts (embedded fonts are more authentic)
+            system_fonts = ["Arial", "Times", "Helvetica", "Courier", "TimesNewRoman"]
+            embedded_count = sum(1 for font in font_usage.keys()
+                               if not any(sys_font in font for sys_font in system_fonts))
+
+            if embedded_count == 0 and unique_fonts > 1:
+                issues.append({
+                    "type": "only_system_fonts",
+                    "severity": "LOW",
+                    "description": "Only system fonts detected - original documents often have embedded fonts"
+                })
+
+            # Analysis 5: Single character in unusual font (insertion indicator)
+            for font_name, data in font_usage.items():
+                if data["count"] < 5:  # Very rarely used font
+                    issues.append({
+                        "type": "rarely_used_font",
+                        "severity": "MEDIUM",
+                        "font": font_name,
+                        "occurrences": data["count"],
+                        "description": f"Font '{font_name}' used only {data['count']} times - possible text insertion"
+                    })
+
+        except Exception as e:
+            issues.append({
+                "type": "font_analysis_error",
+                "severity": "LOW",
+                "description": f"Font analysis failed: {str(e)}"
+            })
+
+        return issues
+
     def _calculate_risk_score(self, formatting_issues: List, content_issues: List,
-                             structure_issues: List) -> int:
+                             structure_issues: List, font_issues: List = None) -> int:
         """Calculate overall risk score (0-100)"""
         score = 0
 
@@ -239,6 +373,8 @@ class FormatValidator:
         }
 
         all_issues = formatting_issues + content_issues + structure_issues
+        if font_issues:
+            all_issues.extend(font_issues)
 
         for issue in all_issues:
             score += severity_weights.get(issue.get("severity", "LOW"), 5)

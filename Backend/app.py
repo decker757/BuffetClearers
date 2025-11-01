@@ -226,9 +226,34 @@ def validate_document():
         report['file_metadata'] = file_metadata
         report['cached'] = False
 
-        # Step 4: Persist to database
+        # Step 4: Persist to database with versioning
         try:
-            supabase.table('document_validations').insert({
+            # Check if this file hash already exists
+            existing = supabase.table('document_validations')\
+                .select('*')\
+                .eq('file_hash', file_hash)\
+                .eq('is_latest', True)\
+                .execute()
+
+            version = 1
+            previous_version_id = None
+
+            if existing.data and len(existing.data) > 0:
+                # File was resubmitted - create new version
+                old_record = existing.data[0]
+                version = old_record.get('version', 1) + 1
+                previous_version_id = old_record['id']
+
+                # Mark old record as not latest
+                supabase.table('document_validations')\
+                    .update({'is_latest': False})\
+                    .eq('id', old_record['id'])\
+                    .execute()
+
+                logger.info(f"Document resubmitted - creating version {version} (previous: {previous_version_id})")
+
+            # Insert new record
+            new_record = {
                 'file_name': file.filename,
                 'file_hash': file_hash,
                 'file_size': file_metadata['file_size'],
@@ -237,9 +262,15 @@ def validate_document():
                 'status': risk_assessment['status'],
                 'report_id': report['report_id'],
                 'report_data': json.dumps(report),
+                'version': version,
+                'is_latest': True,
+                'previous_version_id': previous_version_id,
                 'created_at': datetime.now().isoformat()
-            }).execute()
-            logger.info(f"Report persisted to database - ID: {report['report_id']}")
+            }
+
+            supabase.table('document_validations').insert(new_record).execute()
+            logger.info(f"Report persisted to database - ID: {report['report_id']}, Version: {version}")
+
         except Exception as e:
             logger.warning(f"Database persistence failed: {e}")
             # Continue even if DB fails
@@ -354,6 +385,7 @@ def get_audit_history():
     try:
         file_name = request.args.get('file_name')
         limit = int(request.args.get('limit', 10))
+        latest_only = request.args.get('latest_only', 'true').lower() == 'true'
 
         # Query from database
         query = supabase.table('document_validations').select('*')
@@ -361,15 +393,107 @@ def get_audit_history():
         if file_name:
             query = query.eq('file_name', file_name)
 
+        if latest_only:
+            query = query.eq('is_latest', True)
+
         response = query.order('created_at', desc=True).limit(limit).execute()
 
         return jsonify({
             'history': response.data,
-            'count': len(response.data)
+            'count': len(response.data),
+            'latest_only': latest_only
         }), 200
 
     except Exception as e:
         logger.error(f"Audit history error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/document/versions/<file_hash>', methods=['GET'])
+#@require_api_key
+def get_document_versions(file_hash):
+    """Get all versions of a document by file hash"""
+    try:
+        response = supabase.table('document_validations')\
+            .select('*')\
+            .eq('file_hash', file_hash)\
+            .order('version', desc=True)\
+            .execute()
+
+        if not response.data:
+            return jsonify({'error': 'Document not found'}), 404
+
+        versions = []
+        for record in response.data:
+            versions.append({
+                'version': record['version'],
+                'is_latest': record['is_latest'],
+                'status': record['status'],
+                'risk_score': record['risk_score'],
+                'created_at': record['created_at'],
+                'report_id': record['report_id']
+            })
+
+        return jsonify({
+            'file_hash': file_hash,
+            'total_versions': len(versions),
+            'versions': versions
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Version history error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/document/compare/<file_hash>/<int:version1>/<int:version2>', methods=['GET'])
+#@require_api_key
+def compare_versions(file_hash, version1, version2):
+    """Compare two versions of a document"""
+    try:
+        # Get both versions
+        v1 = supabase.table('document_validations')\
+            .select('*')\
+            .eq('file_hash', file_hash)\
+            .eq('version', version1)\
+            .execute()
+
+        v2 = supabase.table('document_validations')\
+            .select('*')\
+            .eq('file_hash', file_hash)\
+            .eq('version', version2)\
+            .execute()
+
+        if not v1.data or not v2.data:
+            return jsonify({'error': 'One or both versions not found'}), 404
+
+        v1_data = v1.data[0]
+        v2_data = v2.data[0]
+
+        comparison = {
+            'file_hash': file_hash,
+            'version1': {
+                'version': version1,
+                'status': v1_data['status'],
+                'risk_score': v1_data['risk_score'],
+                'created_at': v1_data['created_at']
+            },
+            'version2': {
+                'version': version2,
+                'status': v2_data['status'],
+                'risk_score': v2_data['risk_score'],
+                'created_at': v2_data['created_at']
+            },
+            'changes': {
+                'status_changed': v1_data['status'] != v2_data['status'],
+                'risk_score_delta': float(v2_data['risk_score']) - float(v1_data['risk_score']) if v1_data['risk_score'] and v2_data['risk_score'] else None,
+                'improvement': (float(v2_data['risk_score']) < float(v1_data['risk_score'])) if v1_data['risk_score'] and v2_data['risk_score'] else None
+            }
+        }
+
+        return jsonify(comparison), 200
+
+    except Exception as e:
+        logger.error(f"Version comparison error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
