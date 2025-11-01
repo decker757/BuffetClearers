@@ -1,0 +1,61 @@
+{
+  "report_id": "e18cbfae4aa1",
+  "file_name": "test_doc.txt",
+  "analysis_timestamp": "2025-11-01T15:53:47.446091",
+  "analyst": "Automated System",
+  "summary": {
+    "overall_risk_score": 100.0,
+    "status": "REJECTED",
+    "max_severity": "HIGH",
+    "recommendation": "Document does not meet requirements and should be rejected. (Risk Score: 100.0)"
+  },
+  "detailed_analysis": {
+    "document_processing": {
+      "status": "not_analyzed"
+    },
+    "format_validation": {
+      "status": "FAIL",
+      "key_findings": [
+        "Content: 2 issue(s) found",
+        "Structure: 3 issue(s) found",
+        "CRITICAL: Document requires significant revision",
+        "Consider regenerating document from template"
+      ],
+      "issues_count": 5
+    },
+    "image_analysis": {
+      "status": "not_analyzed"
+    }
+  },
+  "risk_factors": [
+    {
+      "component": "format_validation",
+      "score": 100,
+      "severity": "HIGH",
+      "issues": [
+        "content: Possible spelling error: 'Teh' (should be 'the')",
+        "content: Missing potential required sections: signature, terms",
+        "structure: Document appears too short (9 lines)",
+        "structure: Numbering sequence appears inconsistent",
+        "structure: Unbalanced parentheses: 2 opening, 1 closing"
+      ],
+      "total_issues": 5
+    }
+  ],
+  "action_items": [
+    {
+      "priority": "HIGH",
+      "action": "Reject document and request resubmission",
+      "assignee": "Compliance Officer"
+    },
+    {
+      "priority": "HIGH",
+      "action": "Address format_validation issues: content: Possible spelling error: 'Teh' (should be 'the')",
+      "assignee": "Document Submitter"
+    }
+  ],
+  "audit_trail": {
+    "components_analyzed": 1,
+    "analysis_timestamp": "2025-11-01T15:53:47.446072"
+  }
+}

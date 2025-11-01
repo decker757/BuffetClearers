@@ -1,0 +1,63 @@
+{
+  "report_id": "813ab682a9d3",
+  "file_name": "Swiss_Home_Purchase_Agreement_Scanned_Noise_forparticipants.pdf",
+  "analysis_timestamp": "2025-11-01T15:58:57.910023",
+  "analyst": "Automated System",
+  "summary": {
+    "overall_risk_score": 45.0,
+    "status": "REVIEW_REQUIRED",
+    "max_severity": "MEDIUM",
+    "recommendation": "Document requires manual review by compliance officer before proceeding. (Risk Score: 45.0)"
+  },
+  "detailed_analysis": {
+    "document_processing": {
+      "status": "unknown",
+      "key_findings": [],
+      "issues_count": 0
+    },
+    "format_validation": {
+      "status": "WARNING",
+      "key_findings": [
+        "Content: 1 issue(s) found",
+        "Structure: 1 issue(s) found",
+        "Review and correct identified formatting issues",
+        "Verify all required sections are present"
+      ],
+      "issues_count": 2
+    },
+    "image_analysis": {
+      "status": "not_analyzed"
+    }
+  },
+  "risk_factors": [
+    {
+      "component": "document_processing",
+      "score": 30,
+      "severity": "MEDIUM",
+      "issues": [
+        "Document appears incomplete"
+      ]
+    },
+    {
+      "component": "format_validation",
+      "score": 60,
+      "severity": "MEDIUM",
+      "issues": [
+        "content: Missing potential required sections: date, amount, signature, party, terms",
+        "structure: Document appears too short (0 lines)"
+      ],
+      "total_issues": 2
+    }
+  ],
+  "action_items": [
+    {
+      "priority": "MEDIUM",
+      "action": "Conduct manual review of document",
+      "assignee": "Compliance Officer"
+    }
+  ],
+  "audit_trail": {
+    "components_analyzed": 2,
+    "analysis_timestamp": "2025-11-01T15:58:57.909977"
+  }
+}
