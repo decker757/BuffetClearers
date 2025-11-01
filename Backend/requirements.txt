@@ -1,0 +1,33 @@
+flask==3.0.0
+flask-CORS==4.0.0
+flask-SocketIO==5.3.5
+
+python-dotenv==1.0.0
+
+supabase==2.3.0
+
+psycopg2==2.9.11
+
+# RAG and AI dependencies
+raganything==1.2.8
+lightrag-hku==1.4.9.7
+sentence-transformers==5.1.2
+
+# Data processing
+pandas==2.3.3
+
+# Image processing and analysis
+Pillow>=10.0.0
+numpy>=1.24.0  # For advanced image analysis (noise, frequency domain)
+
+# Document processing
+PyPDF2>=3.0.0
+PyMuPDF>=1.23.0  # For PDF font analysis (optional but recommended)
+
+# HTTP requests
+requests>=2.31.0
+
+# File type detection (optional - falls back to extension-based detection)
+# python-magic>=0.4.27
+# To enable: brew install libmagic (macOS) or apt-get install libmagic1 (Ubuntu)
+# Then: pip install python-magic
