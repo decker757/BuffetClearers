@@ -4,6 +4,11 @@ from lightrag.utils import EmbeddingFunc
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 import os, json, asyncio
+import sys
+
+# Add parent directory to path for utils
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.metadata_extractor import MetadataExtractor
 
 load_dotenv()
 
@@ -105,28 +110,77 @@ class RAGProcessor:
             else:
                 file_to_process = file_path
 
-            await self.engine.process_document_complete(file_to_process)
-            result = await self.engine.aquery(
-                "Is this document complete, properly formatted, and compliant?",
-                mode="hybrid"
-            )
+            # Extract metadata first
+            file_ext = os.path.splitext(file_path)[1].lower()
+            metadata = {}
+            extracted_text = ""
 
-            # Ensure result is serializable
-            if result is None:
-                return json.dumps({"error": "No result from query", "status": "failed"}, indent=2)
-
-            # If result is already a string, return it
-            if isinstance(result, str):
-                # Try to parse and re-serialize to ensure valid JSON
+            if file_ext == '.pdf':
+                metadata = MetadataExtractor.extract_pdf_metadata(file_to_process)
+                # Extract text for completeness check
                 try:
-                    parsed = json.loads(result)
-                    return json.dumps(parsed, indent=2)
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(file_to_process)
+                    for page in reader.pages:
+                        text = page.extract_text()
+                        if text:
+                            extracted_text += text
                 except:
-                    # If not JSON, wrap it
-                    return json.dumps({"response": result}, indent=2)
+                    pass
 
-            # Otherwise serialize the object
-            return json.dumps(result, indent=2, default=str)
+            # Get completeness indicators
+            doc_type = metadata.get('document_type', 'unknown')
+            completeness = MetadataExtractor.extract_completeness_indicators(extracted_text, doc_type)
+
+            # Process with RAG
+            await self.engine.process_document_complete(file_to_process)
+
+            # Improved, structured prompt for better LLM analysis
+            prompt = f"""Analyze this {doc_type if doc_type != 'unknown' else ''} document for compliance and completeness.
+
+DOCUMENT CONTEXT:
+- Type: {doc_type}
+- Pages: {metadata.get('page_count', 'unknown')}
+- Text Coverage: {metadata.get('text_coverage_percent', 0):.1f}%
+- Scanned: {'Yes' if metadata.get('is_scanned', False) else 'No'}
+
+Provide a structured assessment:
+
+1. COMPLETENESS:
+   - Are all required sections present (date, parties, amounts, signatures, terms)?
+   - Missing elements detected: {', '.join(completeness.get('missing_elements', [])) or 'None'}
+
+2. FORMATTING:
+   - Is the document properly formatted and consistent?
+   - Are there any formatting anomalies or irregularities?
+
+3. COMPLIANCE:
+   - Does the document meet standard regulatory requirements for {doc_type}?
+   - Are there any compliance red flags or concerns?
+
+4. AUTHENTICITY INDICATORS:
+   - Are there signs of tampering, alterations, or forgery?
+   - Is the document structure consistent with legitimate {doc_type} documents?
+
+Provide a clear verdict: COMPLIANT, REVIEW_REQUIRED, or NON_COMPLIANT with specific reasons."""
+
+            result = await self.engine.aquery(prompt, mode="hybrid")
+
+            # Parse LLM result and determine status
+            llm_response = str(result) if result else ""
+            status = self._determine_status(llm_response, completeness)
+
+            # Build enhanced response
+            enhanced_result = {
+                "status": status,
+                "llm_analysis": llm_response,
+                "metadata": metadata,
+                "completeness": completeness,
+                "confidence_score": self._calculate_confidence(metadata, completeness, llm_response),
+                "issues_detected": self._extract_issues(llm_response, completeness)
+            }
+
+            return json.dumps(enhanced_result, indent=2, default=str)
         finally:
             # Clean up converted file
             if converted_file and os.path.exists(converted_file):
@@ -142,3 +196,92 @@ class RAGProcessor:
                     shutil.rmtree(self.working_dir)
                 except Exception as e:
                     print(f"Warning: Could not delete RAG storage directory {self.working_dir}: {e}")
+
+    def _determine_status(self, llm_response: str, completeness: dict) -> str:
+        """Determine explicit document status based on LLM response and completeness"""
+        llm_lower = llm_response.lower()
+
+        # Check for explicit verdicts in LLM response
+        if 'non_compliant' in llm_lower or 'non-compliant' in llm_lower:
+            return "FAILED"
+        if 'review_required' in llm_lower or 'review required' in llm_lower:
+            return "REVIEW_REQUIRED"
+        if 'compliant' in llm_lower:
+            return "PASS"
+
+        # Fall back to completeness score
+        completeness_score = completeness.get('completeness_score', 0)
+
+        if completeness_score < 50:
+            return "INCOMPLETE"
+        elif completeness_score < 80:
+            return "REVIEW_REQUIRED"
+        else:
+            return "PASS"
+
+    def _calculate_confidence(self, metadata: dict, completeness: dict, llm_response: str) -> float:
+        """Calculate confidence score for the analysis"""
+        confidence = 100.0
+
+        # Penalize for missing metadata
+        if not metadata.get('page_count'):
+            confidence -= 10
+
+        # Penalize for low text coverage (scanned docs)
+        text_coverage = metadata.get('text_coverage_percent', 0)
+        if text_coverage < 30:
+            confidence -= 20
+        elif text_coverage < 60:
+            confidence -= 10
+
+        # Penalize for low completeness
+        completeness_score = completeness.get('completeness_score', 0)
+        if completeness_score < 50:
+            confidence -= 20
+        elif completeness_score < 80:
+            confidence -= 10
+
+        # Penalize if LLM response is very short (uncertain)
+        if len(llm_response) < 100:
+            confidence -= 15
+
+        return max(0, min(100, confidence))
+
+    def _extract_issues(self, llm_response: str, completeness: dict) -> list:
+        """Extract specific issues from analysis"""
+        issues = []
+
+        # Add missing elements from completeness check
+        missing_elements = completeness.get('missing_elements', [])
+        for element in missing_elements:
+            issues.append({
+                "type": "missing_content",
+                "severity": "MEDIUM",
+                "description": element
+            })
+
+        # Parse LLM response for issues
+        llm_lower = llm_response.lower()
+
+        if 'tamper' in llm_lower or 'alter' in llm_lower:
+            issues.append({
+                "type": "authenticity_concern",
+                "severity": "HIGH",
+                "description": "Possible tampering or alterations detected"
+            })
+
+        if 'incomplete' in llm_lower:
+            issues.append({
+                "type": "completeness",
+                "severity": "MEDIUM",
+                "description": "Document appears incomplete"
+            })
+
+        if 'formatting' in llm_lower and ('issue' in llm_lower or 'irregular' in llm_lower):
+            issues.append({
+                "type": "formatting",
+                "severity": "LOW",
+                "description": "Formatting irregularities detected"
+            })
+
+        return issues

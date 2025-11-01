@@ -210,4 +210,6 @@ __marimo__/
 #RAGAnything output
 output
 uploads
-rag_storage
+rag_storage*
+audit_logs
+cache

@@ -70,49 +70,97 @@ class RiskScorer:
         }
 
     def _assess_document_risk(self, analysis: Dict) -> Dict[str, Any]:
-        """Assess risk from document processing analysis"""
+        """Assess risk from document processing analysis with dynamic calculation"""
         # Ensure analysis is a dictionary
         if not isinstance(analysis, dict):
             return {
                 "component": "document_processing",
                 "score": 80,
                 "severity": "HIGH",
-                "issues": ["Invalid analysis format - expected dictionary"]
+                "issues": ["Invalid analysis format - expected dictionary"],
+                "confidence": 0,
+                "details": {}
             }
 
-        # This would integrate with your RAG analysis
         risk_score = 0
         issues = []
+        details = {}
 
         # Check if document was processed successfully
         if analysis.get('error'):
             risk_score = 80
             issues.append(f"Document processing failed: {analysis.get('error')}")
             severity = "HIGH"
+            confidence = 0
         else:
-            # Analyze RAG query results
-            # Look for keywords indicating issues
-            result_text = str(analysis).lower()
+            # Extract structured data from enhanced analysis
+            status = analysis.get('status', 'unknown')
+            completeness = analysis.get('completeness', {})
+            metadata = analysis.get('metadata', {})
+            confidence = analysis.get('confidence_score', 50)
+            detected_issues = analysis.get('issues_detected', [])
 
-            if 'incomplete' in result_text or 'missing' in result_text:
+            # Status-based risk
+            status_risk_map = {
+                "FAILED": 80,
+                "INCOMPLETE": 60,
+                "REVIEW_REQUIRED": 40,
+                "PASS": 10
+            }
+            risk_score += status_risk_map.get(status, 50)
+
+            # Completeness-based risk
+            completeness_score = completeness.get('completeness_score', 0)
+            if completeness_score < 50:
                 risk_score += 30
-                issues.append("Document appears incomplete")
+                issues.append(f"Low completeness: {completeness_score:.0f}%")
+            elif completeness_score < 80:
+                risk_score += 15
+                issues.append(f"Moderate completeness concerns: {completeness_score:.0f}%")
 
-            if 'non-compliant' in result_text or 'violation' in result_text:
-                risk_score += 40
-                issues.append("Compliance issues detected")
-
-            if 'improperly formatted' in result_text:
+            # Text coverage risk (scanned docs are riskier)
+            text_coverage = metadata.get('text_coverage_percent', 0)
+            if text_coverage < 30:
                 risk_score += 20
-                issues.append("Formatting issues detected")
+                issues.append(f"Very low text coverage: {text_coverage:.0f}% - likely scanned")
+            elif text_coverage < 60:
+                risk_score += 10
+                issues.append(f"Low text coverage: {text_coverage:.0f}%")
 
-            severity = "HIGH" if risk_score > 50 else "MEDIUM" if risk_score > 20 else "LOW"
+            # Document type classification
+            doc_type = metadata.get('document_type', 'unknown')
+            type_confidence = metadata.get('confidence', 0)
+            if doc_type == 'unknown' or type_confidence < 30:
+                risk_score += 15
+                issues.append("Document type could not be reliably classified")
+
+            # Add specific detected issues
+            for issue in detected_issues:
+                issue_desc = issue.get('description', '')
+                if issue_desc and issue_desc not in [i for i in issues]:
+                    issues.append(issue_desc)
+
+            # Missing elements
+            missing = completeness.get('missing_elements', [])
+            if missing:
+                details['missing_elements'] = missing
+
+            # Metadata details
+            details['document_type'] = doc_type
+            details['page_count'] = metadata.get('page_count', 0)
+            details['text_coverage'] = f"{text_coverage:.1f}%"
+            details['is_scanned'] = metadata.get('is_scanned', False)
+            details['completeness_score'] = f"{completeness_score:.0f}%"
+
+            severity = "HIGH" if risk_score > 60 else "MEDIUM" if risk_score > 30 else "LOW"
 
         return {
             "component": "document_processing",
-            "score": risk_score,
+            "score": min(100, risk_score),  # Cap at 100
             "severity": severity,
-            "issues": issues
+            "issues": issues[:5],  # Top 5 issues
+            "confidence": confidence,
+            "details": details
         }
 
     def _assess_format_risk(self, validation: Dict) -> Dict[str, Any]:

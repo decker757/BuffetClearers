@@ -24,3 +24,8 @@ PyPDF2>=3.0.0
 
 # HTTP requests
 requests>=2.31.0
+
+# File type detection (optional - falls back to extension-based detection)
+# python-magic>=0.4.27
+# To enable: brew install libmagic (macOS) or apt-get install libmagic1 (Ubuntu)
+# Then: pip install python-magic
