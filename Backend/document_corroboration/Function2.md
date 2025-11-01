@@ -1,3 +1,4 @@
+@ -1,259 +0,0 @@
 # Document Corroboration System
 
 Comprehensive document validation system with 4 integrated components for detecting fraudulent or non-compliant documents.

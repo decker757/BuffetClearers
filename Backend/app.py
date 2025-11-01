@@ -4,10 +4,9 @@ from flask_socketio import SocketIO, emit
 from datetime import datetime
 from supabase import create_client
 from dotenv import load_dotenv
-import asyncio
 import os
 import json
-import psycopg2
+import psycopg2  # <-- Added for PostgreSQL connection
 
 # Load environment variables
 load_dotenv()
