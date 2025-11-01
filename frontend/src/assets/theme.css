@@ -1,31 +1,89 @@
 :root {
-  --primary-color: #002855; /* Julius Baer navy */
-  --accent-color: #0096c7;  /* fintech blue */
-  --bg-color: #f5f7fa;
-  --text-color: #212529;
-  --success-color: #28a745;
-  --warning-color: #ffc107;
-  --danger-color: #dc3545;
-  --border-radius: 0.5rem;
+  /* Brand colours */
+  --brand-1:#003366;     /* deep navy */
+  --brand-2:#007bff;     /* bright blue accent */
+  --accent:#00bcd4;
+  --bg:#f6f8fb;          /* body background */
+  --surface:#ffffff;      /* card background */
+  --text:#212529;         /* primary text */
+  --muted:#6c757d;        /* secondary text */
+  --border:#e1e6ed;       /* borders */
+  --radius:12px;
 }
 
-body {
-  background-color: var(--bg-color);
-  color: var(--text-color);
-  font-family: 'Inter', 'Segoe UI', sans-serif;
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, sans-serif;
+  margin: 0;
+  height: 100%;
 }
 
+/* Layout containers */
 .card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 14px rgba(0,0,0,0.05);
+  color: var(--text);
+}
+
+.glassbar {
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar {
+  background: #ffffff;
+  border-right: 1px solid var(--border);
+}
+
+/* Buttons */
+.btn-primary {
+  background: linear-gradient(90deg, var(--brand-1), var(--brand-2));
+  color: #fff;
   border: none;
-  border-radius: var(--border-radius);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius);
+}
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+.btn-outline-light, .btn-outline-secondary {
+  color: var(--brand-1);
+  border: 1px solid var(--border);
+  background: #fff;
+}
+.btn-outline-light:hover, .btn-outline-secondary:hover {
+  background: var(--bg);
 }
 
-.badge {
-  border-radius: var(--border-radius);
+/* Nav Links */
+.nav-link {
+  color: var(--text);
+  transition: background .2s ease;
 }
-
 .nav-link.active {
+  background: var(--brand-2);
+  color: #fff !important;
   font-weight: 600;
-  color: var(--accent-color) !important;
+}
+.nav-link:hover {
+  background: #e9ecef;
+}
+
+/* Headings and text */
+h1,h2,h3,h4,h5,h6,label,p,span,div {
+  color: var(--text);
+}
+
+/* KPI sparkline colour */
+svg polyline {
+  stroke: var(--brand-2);
+}
+
+/* Focus */
+:focus-visible {
+  outline: 2px solid var(--brand-2);
+  outline-offset: 3px;
 }

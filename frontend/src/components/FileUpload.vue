@@ -47,6 +47,7 @@ function openPicker() {
 
 function handleFiles(e) {
   selectedFiles.value = Array.from(e.target.files)
+  console.log('FileUpload emitting:', selectedFiles.value)
   emit('files-selected', selectedFiles.value) // ✅ tell parent
 }
 </script>

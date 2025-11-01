@@ -78,6 +78,7 @@ const isAnalyzing = ref(false)
 const isCompleted = ref(false)
 
 function handleFiles(files) {
+console.log('Documents.vue received:', files)
   uploadedFiles.value = files
   isCompleted.value = false
   results.value = []
@@ -121,19 +122,54 @@ function riskBar(risk) {
 
 <style scoped>
 .analyze-btn {
-  border-radius: var(--border-radius);
-  background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+  position: relative;
+  font-weight: 600;
   border: none;
-  transition: all 0.2s ease;
+  color: #fff;
+  background: linear-gradient(270deg, #0072ff, #00c6ff);
+  background-size: 200% 200%;
+  border-radius: 0.75rem;
+  box-shadow: 0 0 10px rgba(0, 114, 255, 0.4);
+  transition: all 0.3s ease;
+  animation: gradientShift 3s ease infinite;
 }
+
 .analyze-btn:hover {
-  opacity: 0.9;
-  transform: scale(1.02);
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 0 20px rgba(0, 183, 255, 0.6);
 }
-.progress-bar {
-  transition: width 0.3s ease;
+
+.analyze-btn:disabled {
+  background: linear-gradient(270deg, #6c757d, #adb5bd);
+  box-shadow: none;
+  opacity: 0.8;
 }
-.alert {
-  border-radius: var(--border-radius);
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Progress bar glow while analyzing */
+.progress-bar-animated {
+  animation: progressPulse 1.5s infinite;
+}
+
+@keyframes progressPulse {
+  0% { box-shadow: 0 0 5px rgba(0,183,255,0.4); }
+  50% { box-shadow: 0 0 15px rgba(0,183,255,0.8); }
+  100% { box-shadow: 0 0 5px rgba(0,183,255,0.4); }
+}
+
+/* Success alert animation */
+.alert-success {
+  animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 </style>
+
