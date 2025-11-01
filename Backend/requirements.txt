@@ -7,3 +7,20 @@ python-dotenv==1.0.0
 supabase==2.3.0
 
 psycopg2==2.9.11
+
+# RAG and AI dependencies
+raganything==1.2.8
+lightrag-hku==1.4.9.7
+sentence-transformers==5.1.2
+
+# Data processing
+pandas==2.3.3
+
+# Image processing and analysis
+Pillow>=10.0.0
+
+# Document processing
+PyPDF2>=3.0.0
+
+# HTTP requests
+requests>=2.31.0
