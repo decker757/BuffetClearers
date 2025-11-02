@@ -137,13 +137,39 @@
 
         <!-- Enhanced Transactions Table (Top 100 by risk) -->
         <div v-if="enhancedTransactions.length" class="mt-4">
-          <h6 class="fw-semibold mb-3">
-            Top Flagged Transactions
-            <span class="badge bg-secondary">{{ enhancedTransactions.length }}</span>
-          </h6>
-          <div class="table-responsive">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="fw-semibold mb-0">
+              Flagged Transactions
+              <span class="badge bg-secondary">{{ enhancedTransactions.length }}</span>
+            </h6>
+            <div class="btn-group btn-group-sm">
+              <button
+                class="btn"
+                :class="displayLimit === 20 ? 'btn-primary' : 'btn-outline-secondary'"
+                @click="displayLimit = 20"
+              >
+                Top 20
+              </button>
+              <button
+                class="btn"
+                :class="displayLimit === 50 ? 'btn-primary' : 'btn-outline-secondary'"
+                @click="displayLimit = 50"
+              >
+                Top 50
+              </button>
+              <button
+                class="btn"
+                :class="displayLimit === Infinity ? 'btn-primary' : 'btn-outline-secondary'"
+                @click="displayLimit = Infinity"
+              >
+                Show All ({{ enhancedTransactions.length }})
+              </button>
+            </div>
+          </div>
+
+          <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
             <table class="table table-hover align-middle">
-              <thead class="table-light">
+              <thead class="table-light sticky-top">
                 <tr>
                   <th>#</th>
                   <th>Transaction ID</th>
@@ -152,12 +178,13 @@
                   <th>Risk Category</th>
                   <th>Alerts</th>
                   <th>Violations</th>
+                  <th>Details</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="(tx, i) in enhancedTransactions.slice(0, 20)"
-                  :key="i"
+                  v-for="(tx, i) in displayedTransactions"
+                  :key="tx.transaction_id"
                   :class="{
                     'table-danger': tx.risk_category === 'CRITICAL',
                     'table-warning': tx.risk_category === 'HIGH' || tx.risk_category === 'MEDIUM'
@@ -200,6 +227,14 @@
                     </span>
                     <span v-else class="text-muted">—</span>
                   </td>
+                  <td>
+                    <button
+                      class="btn btn-sm btn-outline-primary"
+                      @click="showTransactionDetails(tx)"
+                    >
+                      <i class="bi bi-eye"></i>
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -207,7 +242,7 @@
 
           <p class="text-muted small mt-2">
             <i class="bi bi-info-circle me-1"></i>
-            Showing top 20 of {{ enhancedTransactions.length }} flagged transactions, sorted by fraud risk score
+            Showing {{ Math.min(displayLimit, enhancedTransactions.length) }} of {{ enhancedTransactions.length }} flagged transactions, sorted by fraud risk score
           </p>
         </div>
       </div>
@@ -216,7 +251,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import axios from "axios";
 
 const fileInput = ref(null);
@@ -274,19 +309,36 @@ function resetAnalysis() {
 }
 
 // Use enhanced_transactions from new API response
+const displayLimit = ref(20);
+
+// Sort by fraud risk descending before slicing
 const enhancedTransactions = computed(() => {
   if (!results.value) return [];
-  // New enhanced API returns enhanced_transactions array
+
+  let txs = [];
+
   if (results.value.enhanced_transactions) {
-    return results.value.enhanced_transactions;
+    txs = results.value.enhanced_transactions;
+  } else {
+    if (results.value.xgboost?.suspicious_transactions)
+      txs.push(...results.value.xgboost.suspicious_transactions);
+    if (results.value.isolation_forest?.anomalous_transactions)
+      txs.push(...results.value.isolation_forest.anomalous_transactions);
   }
-  // Fallback for old API format
-  const all = [];
-  if (results.value.xgboost?.suspicious_transactions)
-    all.push(...results.value.xgboost.suspicious_transactions);
-  if (results.value.isolation_forest?.anomalous_transactions)
-    all.push(...results.value.isolation_forest.anomalous_transactions);
-  return all;
+
+  // Sort descending by fraud_risk_score (nulls last)
+  return txs.sort((a, b) => (b.fraud_risk_score || 0) - (a.fraud_risk_score || 0));
+});
+
+const displayedTransactions = computed(() => {
+  if (!enhancedTransactions.value.length) return [];
+  if (displayLimit.value === Infinity) return enhancedTransactions.value;
+  return enhancedTransactions.value.slice(0, displayLimit.value);
+});
+
+// Reset limit when new results are loaded
+watch(results, () => {
+  displayLimit.value = 20;
 });
 </script>
 
