@@ -93,7 +93,7 @@ def train_model(csv_path='Datasets/transactions_mock_1000_for_participants.csv')
     return model, label_encoders, feature_cols, metrics
 
 
-def predict_transactions(transactions_df, model=None, label_encoders=None):
+def predict_transactions(transactions_df, model=None, label_encoders=None, include_feature_importance=False):
     """
     Predict suspicious transactions from a DataFrame
 
@@ -101,9 +101,11 @@ def predict_transactions(transactions_df, model=None, label_encoders=None):
         transactions_df: DataFrame with transaction data
         model: Trained XGBoost model (optional, will use global if None)
         label_encoders: Dictionary of label encoders (optional, will use global if None)
+        include_feature_importance: Whether to include feature importance explanations
 
     Returns:
         DataFrame with predictions and probabilities
+        If include_feature_importance=True, also returns feature importance dict
     """
     global _trained_model, _label_encoders
 
@@ -162,7 +164,129 @@ def predict_transactions(transactions_df, model=None, label_encoders=None):
         labels=['Low', 'Medium', 'High']
     )
 
-    return result_df
+    # Get feature importance if requested
+    feature_importance = None
+    if include_feature_importance:
+        feature_importance = get_feature_importance(model, feature_cols)
+
+    if include_feature_importance:
+        return result_df, feature_importance
+    else:
+        return result_df
+
+
+def get_feature_importance(model=None, feature_names=None, top_n=10):
+    """
+    Get feature importance from trained model
+
+    Args:
+        model: Trained XGBoost model (optional)
+        feature_names: List of feature names (optional)
+        top_n: Number of top features to return
+
+    Returns:
+        Dictionary with feature importance scores
+    """
+    global _trained_model
+
+    if model is None:
+        if _trained_model is None:
+            raise ValueError("No trained model available. Call train_model() first.")
+        model = _trained_model
+
+    # Get feature importance scores
+    importance_scores = model.feature_importances_
+
+    if feature_names is None:
+        categorical_cols = [
+            'booking_jurisdiction', 'regulator', 'currency', 'channel', 'product_type',
+            'originator_country', 'beneficiary_country', 'customer_type', 'customer_risk_rating',
+            'customer_is_pep', 'travel_rule_complete', 'product_complex'
+        ]
+
+        numeric_cols = [
+            'amount', 'fx_applied_rate', 'fx_market_rate', 'fx_spread_bps',
+            'daily_cash_total_customer', 'daily_cash_txn_count', 'fx_anomaly', 'amount_ratio_daily'
+        ]
+        feature_names = numeric_cols + categorical_cols
+
+    # Create feature importance dictionary
+    feature_importance = dict(zip(feature_names, importance_scores))
+
+    # Sort by importance and get top N
+    sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    return {
+        'top_features': [{'feature': name, 'importance': float(score)} for name, score in sorted_features],
+        'all_features': {name: float(score) for name, score in feature_importance.items()}
+    }
+
+
+def explain_prediction(transaction_data, model=None, label_encoders=None, top_n=5):
+    """
+    Explain why a specific transaction was flagged as suspicious
+
+    Args:
+        transaction_data: Dictionary or Series with transaction data
+        model: Trained model (optional)
+        label_encoders: Label encoders (optional)
+        top_n: Number of top contributing features to return
+
+    Returns:
+        Dictionary with explanation
+    """
+    global _trained_model, _label_encoders
+
+    if model is None:
+        model = _trained_model
+    if label_encoders is None:
+        label_encoders = _label_encoders
+
+    # Convert to DataFrame if dict
+    if isinstance(transaction_data, dict):
+        df = pd.DataFrame([transaction_data])
+    else:
+        df = pd.DataFrame([transaction_data.to_dict()])
+
+    # Get prediction
+    result_df = predict_transactions(df, model, label_encoders)
+    probability = result_df['suspicion_probability'].iloc[0]
+
+    # Get feature values
+    df['fx_anomaly'] = abs(df['fx_applied_rate'] - df['fx_market_rate'])
+    df['amount_ratio_daily'] = df['amount'] / (df['daily_cash_total_customer'] + 1e-6)
+
+    # Get global feature importance
+    importance = get_feature_importance(model, top_n=top_n)
+
+    # Identify specific risk factors for this transaction
+    risk_factors = []
+
+    # Check high-value features
+    if df['amount'].iloc[0] > 100000:
+        risk_factors.append({'factor': 'High transaction amount', 'value': float(df['amount'].iloc[0])})
+
+    if df['fx_anomaly'].iloc[0] > 0.05:
+        risk_factors.append({'factor': 'Unusual FX rate spread', 'value': float(df['fx_anomaly'].iloc[0])})
+
+    if df['amount_ratio_daily'].iloc[0] > 0.5:
+        risk_factors.append({'factor': 'Large portion of daily activity', 'value': float(df['amount_ratio_daily'].iloc[0])})
+
+    if 'customer_is_pep' in df.columns and df['customer_is_pep'].iloc[0] == 'Yes':
+        risk_factors.append({'factor': 'Customer is PEP', 'value': 'Yes'})
+
+    if 'travel_rule_complete' in df.columns and df['travel_rule_complete'].iloc[0] == 'No':
+        risk_factors.append({'factor': 'Travel rule incomplete', 'value': 'No'})
+
+    if 'customer_risk_rating' in df.columns and df['customer_risk_rating'].iloc[0] in ['high', 'High']:
+        risk_factors.append({'factor': 'High-risk customer', 'value': df['customer_risk_rating'].iloc[0]})
+
+    return {
+        'suspicion_probability': float(probability),
+        'risk_level': result_df['risk_level'].iloc[0],
+        'top_model_features': importance['top_features'][:top_n],
+        'transaction_risk_factors': risk_factors
+    }
 
 
 def get_suspicious_transactions(transactions_df, threshold=0.5):

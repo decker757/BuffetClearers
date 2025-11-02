@@ -533,6 +533,14 @@ def analyze_transactions():
     """
     Analyze transactions using both XGBoost and Isolation Forest models
 
+    Enhanced with:
+    - Audit traceability (model_version, execution_id, data_source)
+    - Unified fraud_risk_score (0-100)
+    - Feature importance explanations
+    - Alert rules for high-risk triggers
+    - Feedback mechanism for manual review
+    - Summary statistics
+
     Request body can be either:
     1. JSON with 'transactions' array
     2. File upload (CSV file)
@@ -541,20 +549,28 @@ def analyze_transactions():
     - method: 'xgboost', 'isolation_forest', or 'both' (default: 'both')
     - threshold: Suspicion threshold for XGBoost (default: 0.5)
     - contamination: Anomaly percentage for Isolation Forest (default: 0.05)
+    - include_explanations: Include feature importance (default: 'true')
     """
     try:
         import pandas as pd
-        from XGBoost import train_model as train_xgb, predict_transactions, get_suspicious_transactions
+        import uuid
+        from XGBoost import (train_model as train_xgb, predict_transactions,
+                            get_suspicious_transactions, get_feature_importance, explain_prediction)
         from isolationforest import train_isolation_forest, detect_anomalies, get_anomalies
+
+        # Generate execution ID for audit traceability
+        execution_id = str(uuid.uuid4())
 
         # Get parameters
         method = request.args.get('method', 'both')
         threshold = float(request.args.get('threshold', 0.5))
         contamination = float(request.args.get('contamination', 0.05))
+        include_explanations = request.args.get('include_explanations', 'true').lower() == 'true'
 
-        logger.info(f"=== Transaction analysis request - Method: {method} ===")
+        logger.info(f"=== Transaction analysis request - Execution ID: {execution_id}, Method: {method} ===")
 
         # Get transaction data - either from JSON or file upload
+        data_source = None
         if 'file' in request.files:
             # CSV file upload
             file = request.files['file']
@@ -573,6 +589,7 @@ def analyze_transactions():
 
             # Load CSV
             transactions_df = pd.read_csv(file_path)
+            data_source = f"csv_upload:{file.filename}"
 
             # Clean up
             os.remove(file_path)
@@ -588,6 +605,7 @@ def analyze_transactions():
 
             transactions = data['transactions']
             transactions_df = pd.DataFrame(transactions)
+            data_source = "json_api"
 
             logger.info(f"Loaded {len(transactions_df)} transactions from JSON")
 
@@ -605,30 +623,64 @@ def analyze_transactions():
                 'required_columns': required_cols
             }), 400
 
+        # Import fraud scoring utilities
+        from utils.fraud_scoring import FraudScorer
+
+        # Initialize enhanced results structure with audit traceability
         results = {
-            'total_transactions': len(transactions_df),
+            # Audit traceability
+            'execution_id': execution_id,
+            'model_version': {
+                'xgboost': '1.0.0',
+                'isolation_forest': '1.0.0',
+                'fraud_scorer': '1.0.0'
+            },
+            'data_source': data_source,
             'analysis_timestamp': datetime.now().isoformat(),
-            'method': method
+
+            # Analysis parameters
+            'analysis_config': {
+                'method': method,
+                'xgboost_threshold': threshold,
+                'isolation_forest_contamination': contamination,
+                'include_explanations': include_explanations
+            },
+
+            # Transaction summary
+            'total_transactions': len(transactions_df),
+
+            # Will be populated below
+            'summary_statistics': {},
+            'model_results': {},
+            'enhanced_transactions': [],
+            'alerts': [],
+            'feedback': []
         }
 
         # Run XGBoost analysis
+        xgb_results = None
+        xgb_feature_importance = None
+
         if method in ['xgboost', 'both']:
             logger.info("Running XGBoost analysis...")
             try:
                 # Train model if not already trained
                 train_xgb()
 
-                # Predict
-                xgb_results = predict_transactions(transactions_df)
+                # Predict with feature importance
+                if include_explanations:
+                    xgb_results, xgb_feature_importance = predict_transactions(
+                        transactions_df, include_feature_importance=True
+                    )
+                else:
+                    xgb_results = predict_transactions(transactions_df)
+
                 suspicious_xgb = xgb_results[xgb_results['suspicion_probability'] >= threshold]
 
-                results['xgboost'] = {
+                results['model_results']['xgboost'] = {
                     'suspicious_count': len(suspicious_xgb),
                     'suspicious_percentage': round(len(suspicious_xgb) / len(transactions_df) * 100, 2),
                     'threshold': threshold,
-                    'suspicious_transactions': suspicious_xgb[[
-                        'transaction_id', 'amount', 'suspicion_probability', 'risk_level'
-                    ]].to_dict('records') if 'transaction_id' in suspicious_xgb.columns else [],
                     'risk_distribution': {
                         'high': int((xgb_results['risk_level'] == 'High').sum()),
                         'medium': int((xgb_results['risk_level'] == 'Medium').sum()),
@@ -636,13 +688,19 @@ def analyze_transactions():
                     }
                 }
 
+                # Add feature importance if available
+                if xgb_feature_importance and include_explanations:
+                    results['model_results']['xgboost']['feature_importance'] = xgb_feature_importance['top_features']
+
                 logger.info(f"XGBoost found {len(suspicious_xgb)} suspicious transactions")
 
             except Exception as e:
                 logger.error(f"XGBoost analysis failed: {e}", exc_info=True)
-                results['xgboost'] = {'error': str(e)}
+                results['model_results']['xgboost'] = {'error': str(e)}
 
         # Run Isolation Forest analysis
+        iso_results = None
+
         if method in ['isolation_forest', 'both']:
             logger.info("Running Isolation Forest analysis...")
             try:
@@ -653,13 +711,10 @@ def analyze_transactions():
                 iso_results = detect_anomalies(transactions_df, contamination=contamination)
                 anomalies = iso_results[iso_results['is_anomaly'] == 1]
 
-                results['isolation_forest'] = {
+                results['model_results']['isolation_forest'] = {
                     'anomaly_count': len(anomalies),
                     'anomaly_percentage': round(len(anomalies) / len(transactions_df) * 100, 2),
                     'contamination': contamination,
-                    'anomalous_transactions': anomalies[[
-                        'transaction_id', 'amount', 'anomaly_score', 'anomaly_severity'
-                    ]].to_dict('records') if 'transaction_id' in anomalies.columns else [],
                     'severity_distribution': {
                         'high': int((iso_results['anomaly_severity'] == 'High').sum()) if 'anomaly_severity' in iso_results.columns else 0,
                         'medium': int((iso_results['anomaly_severity'] == 'Medium').sum()) if 'anomaly_severity' in iso_results.columns else 0,
@@ -671,31 +726,242 @@ def analyze_transactions():
 
             except Exception as e:
                 logger.error(f"Isolation Forest analysis failed: {e}", exc_info=True)
-                results['isolation_forest'] = {'error': str(e)}
+                results['model_results']['isolation_forest'] = {'error': str(e)}
 
-        # If both methods were used, find consensus
-        if method == 'both' and 'xgboost' in results and 'isolation_forest' in results:
-            if 'error' not in results['xgboost'] and 'error' not in results['isolation_forest']:
-                xgb_suspicious_ids = set()
-                iso_anomaly_ids = set()
+        # Enhanced transaction-level analysis with unified fraud scoring
+        logger.info("Calculating unified fraud scores and alerts...")
+        enhanced_transactions = []
+        all_alerts = []
+        fraud_scores = []
 
-                if 'transaction_id' in transactions_df.columns:
-                    xgb_results = predict_transactions(transactions_df)
-                    iso_results = detect_anomalies(transactions_df, contamination=contamination)
+        for idx, row in transactions_df.iterrows():
+            # Get model predictions
+            xgb_prob = xgb_results.loc[idx, 'suspicion_probability'] if xgb_results is not None else None
+            iso_score = iso_results.loc[idx, 'anomaly_score'] if iso_results is not None else None
 
-                    xgb_suspicious_ids = set(xgb_results[xgb_results['suspicion_probability'] >= threshold]['transaction_id'])
-                    iso_anomaly_ids = set(iso_results[iso_results['is_anomaly'] == 1]['transaction_id'])
+            # Check alert rules
+            alerts = FraudScorer.check_alert_rules(row)
+            all_alerts.extend(alerts)
 
-                    consensus_ids = xgb_suspicious_ids.intersection(iso_anomaly_ids)
+            # Calculate unified fraud score
+            fraud_score = FraudScorer.calculate_unified_fraud_score(xgb_prob, iso_score, alerts)
+            fraud_scores.append(fraud_score)
+            risk_category = FraudScorer.get_risk_category(fraud_score)
 
-                    results['consensus'] = {
-                        'flagged_by_both': len(consensus_ids),
-                        'flagged_by_xgboost_only': len(xgb_suspicious_ids - iso_anomaly_ids),
-                        'flagged_by_isolation_forest_only': len(iso_anomaly_ids - xgb_suspicious_ids),
-                        'high_confidence_transactions': list(consensus_ids)
+            # Build enhanced transaction record
+            enhanced_txn = {
+                'transaction_id': row.get('transaction_id', f'TXN_{idx}'),
+                'amount': float(row.get('amount', 0)),
+                'fraud_risk_score': round(fraud_score, 2),
+                'risk_category': risk_category,
+                'model_scores': {
+                    'xgboost_probability': round(float(xgb_prob), 4) if xgb_prob is not None else None,
+                    'isolation_forest_score': round(float(iso_score), 4) if iso_score is not None else None
+                },
+                'alerts': alerts,
+                'alert_count': len(alerts),
+            }
+
+            # Add contextual fields if available
+            contextual_fields = ['currency', 'channel', 'originator_country', 'beneficiary_country',
+                                'customer_type', 'customer_risk_rating', 'customer_is_pep']
+            enhanced_txn['context'] = {field: row.get(field) for field in contextual_fields if field in row}
+
+            # Add explanations for high-risk transactions
+            if include_explanations and fraud_score >= 60 and xgb_results is not None:
+                try:
+                    explanation = explain_prediction(row)
+                    enhanced_txn['explanation'] = {
+                        'top_features': explanation.get('top_model_features', []),
+                        'risk_factors': explanation.get('transaction_risk_factors', [])
                     }
+                except Exception as e:
+                    logger.warning(f"Failed to generate explanation for transaction {idx}: {e}")
 
-                    logger.info(f"Consensus: {len(consensus_ids)} transactions flagged by both models")
+            # Add feedback placeholder
+            enhanced_txn['feedback'] = {
+                'reviewed': False,
+                'reviewer': None,
+                'decision': None,
+                'notes': None,
+                'reviewed_at': None
+            }
+
+            enhanced_transactions.append(enhanced_txn)
+
+        # Store enhanced transactions (top 100 by fraud score for response size)
+        results['enhanced_transactions'] = sorted(
+            enhanced_transactions,
+            key=lambda x: x['fraud_risk_score'],
+            reverse=True
+        )[:100]
+
+        # Summary statistics
+        results['summary_statistics'] = {
+            'total_transactions': len(transactions_df),
+            'fraud_scores': {
+                'average': round(sum(fraud_scores) / len(fraud_scores), 2) if fraud_scores else 0,
+                'median': round(sorted(fraud_scores)[len(fraud_scores)//2], 2) if fraud_scores else 0,
+                'max': round(max(fraud_scores), 2) if fraud_scores else 0,
+                'min': round(min(fraud_scores), 2) if fraud_scores else 0
+            },
+            'risk_categories': {
+                'critical': sum(1 for s in fraud_scores if s >= 80),
+                'high': sum(1 for s in fraud_scores if 60 <= s < 80),
+                'medium': sum(1 for s in fraud_scores if 40 <= s < 60),
+                'low': sum(1 for s in fraud_scores if 20 <= s < 40),
+                'minimal': sum(1 for s in fraud_scores if s < 20)
+            },
+            'high_risk_percentage': round(sum(1 for s in fraud_scores if s >= 60) / len(fraud_scores) * 100, 2) if fraud_scores else 0,
+            'total_alerts_triggered': len(all_alerts),
+            'unique_alert_types': len(set(alert['rule'] for alert in all_alerts))
+        }
+
+        # Alert summary
+        alert_summary = {}
+        for alert in all_alerts:
+            rule = alert['rule']
+            if rule not in alert_summary:
+                alert_summary[rule] = {
+                    'count': 0,
+                    'severity': alert['severity'],
+                    'description': alert['description']
+                }
+            alert_summary[rule]['count'] += 1
+
+        results['alerts'] = {
+            'summary': alert_summary,
+            'total_triggered': len(all_alerts),
+            'critical_alerts': sum(1 for a in all_alerts if a['severity'] == 'critical'),
+            'high_alerts': sum(1 for a in all_alerts if a['severity'] == 'high')
+        }
+
+        # Consensus analysis if both models used
+        if method == 'both' and xgb_results is not None and iso_results is not None:
+            high_conf_txns = [
+                txn for txn in enhanced_transactions
+                if txn['model_scores']['xgboost_probability'] and
+                   txn['model_scores']['xgboost_probability'] >= threshold and
+                   txn['model_scores']['isolation_forest_score'] and
+                   txn['model_scores']['isolation_forest_score'] < 0
+            ]
+
+            results['consensus'] = {
+                'high_confidence_count': len(high_conf_txns),
+                'high_confidence_percentage': round(len(high_conf_txns) / len(transactions_df) * 100, 2),
+                'description': 'Transactions flagged as suspicious by both models'
+            }
+
+            logger.info(f"Consensus: {len(high_conf_txns)} high-confidence suspicious transactions")
+
+        # ============================================================
+        # PERSIST TO SUPABASE - Audit Trail & Transaction Analysis
+        # ============================================================
+        try:
+            logger.info("Persisting analysis results to Supabase...")
+
+            # 1. Create audit trail record for this analysis execution
+            audit_record = {
+                'execution_id': execution_id,
+                'event_type': 'transaction_analysis',
+                'data_source': data_source,
+                'total_transactions': len(transactions_df),
+                'analysis_method': method,
+                'model_versions': json.dumps(results['model_version']),
+                'analysis_config': json.dumps(results['analysis_config']),
+                'summary_stats': json.dumps(results['summary_statistics']),
+                'alert_summary': json.dumps(results['alerts']),
+                'high_risk_count': results['summary_statistics']['risk_categories']['critical'] +
+                                 results['summary_statistics']['risk_categories']['high'],
+                'average_fraud_score': results['summary_statistics']['fraud_scores']['average'],
+                'performed_by': request.headers.get('X-User-Email', 'system'),
+                'timestamp': datetime.now().isoformat(),
+                'metadata': json.dumps({
+                    'consensus': results.get('consensus', {}),
+                    'model_results': results['model_results']
+                })
+            }
+
+            supabase.table('transaction_analysis_audit').insert(audit_record).execute()
+            logger.info(f"Audit trail created - Execution ID: {execution_id}")
+
+            # 2. Persist individual high-risk transactions (fraud_score >= 60)
+            high_risk_transactions = [
+                txn for txn in enhanced_transactions
+                if txn['fraud_risk_score'] >= 60
+            ]
+
+            if high_risk_transactions:
+                transaction_records = []
+                for txn in high_risk_transactions:
+                    record = {
+                        'execution_id': execution_id,
+                        'transaction_id': txn['transaction_id'],
+                        'amount': txn['amount'],
+                        'fraud_risk_score': txn['fraud_risk_score'],
+                        'risk_category': txn['risk_category'],
+                        'xgboost_probability': txn['model_scores'].get('xgboost_probability'),
+                        'isolation_forest_score': txn['model_scores'].get('isolation_forest_score'),
+                        'alert_count': txn['alert_count'],
+                        'alerts': json.dumps(txn['alerts']),
+                        'context': json.dumps(txn['context']),
+                        'explanation': json.dumps(txn.get('explanation', {})),
+                        'status': 'pending_review',
+                        'created_at': datetime.now().isoformat()
+                    }
+                    transaction_records.append(record)
+
+                # Batch insert high-risk transactions
+                supabase.table('flagged_transactions').insert(transaction_records).execute()
+                logger.info(f"Persisted {len(transaction_records)} high-risk transactions to Supabase")
+
+            # 3. Create alerts for CRITICAL transactions (fraud_score >= 80)
+            critical_transactions = [
+                txn for txn in enhanced_transactions
+                if txn['fraud_risk_score'] >= 80
+            ]
+
+            if critical_transactions:
+                alert_records = []
+                for txn in critical_transactions:
+                    alert = {
+                        'execution_id': execution_id,
+                        'transaction_id': txn['transaction_id'],
+                        'alert_type': 'critical_fraud_risk',
+                        'severity': 'critical',
+                        'fraud_score': txn['fraud_risk_score'],
+                        'risk_category': txn['risk_category'],
+                        'description': f"Critical fraud risk detected: Score {txn['fraud_risk_score']}/100",
+                        'triggered_rules': json.dumps([a['rule'] for a in txn['alerts']]),
+                        'status': 'open',
+                        'assigned_to': None,
+                        'created_at': datetime.now().isoformat(),
+                        'metadata': json.dumps({
+                            'amount': txn['amount'],
+                            'context': txn['context'],
+                            'model_scores': txn['model_scores']
+                        })
+                    }
+                    alert_records.append(alert)
+
+                supabase.table('fraud_alerts').insert(alert_records).execute()
+                logger.info(f"Created {len(alert_records)} critical alerts in Supabase")
+
+            results['database_persistence'] = {
+                'status': 'success',
+                'audit_trail_created': True,
+                'high_risk_transactions_saved': len(high_risk_transactions),
+                'critical_alerts_created': len(critical_transactions) if critical_transactions else 0
+            }
+
+        except Exception as e:
+            logger.error(f"Supabase persistence failed: {e}", exc_info=True)
+            results['database_persistence'] = {
+                'status': 'failed',
+                'error': str(e),
+                'note': 'Analysis completed successfully but database persistence failed'
+            }
+            # Don't fail the entire request if DB persistence fails
 
         logger.info("=== Transaction analysis complete ===")
         return jsonify(results), 200
@@ -706,6 +972,103 @@ def analyze_transactions():
             'error': f'Transaction analysis failed: {str(e)}',
             'error_type': type(e).__name__
         }), 500
+
+
+@app.route('/api/transaction-feedback', methods=['POST'])
+#@require_api_key
+def submit_transaction_feedback():
+    """
+    Submit manual review feedback for a transaction
+
+    Request body:
+    {
+        "execution_id": "uuid",
+        "transaction_id": "TXN001",
+        "reviewer": "analyst@company.com",
+        "decision": "confirmed_fraud" | "false_positive" | "needs_investigation",
+        "notes": "Additional comments"
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        required_fields = ['execution_id', 'transaction_id', 'decision', 'reviewer']
+        missing_fields = [field for field in required_fields if field not in data]
+
+        if missing_fields:
+            return jsonify({
+                'error': 'Missing required fields',
+                'missing_fields': missing_fields
+            }), 400
+
+        # Validate decision type
+        valid_decisions = ['confirmed_fraud', 'false_positive', 'needs_investigation', 'legitimate']
+        if data['decision'] not in valid_decisions:
+            return jsonify({
+                'error': 'Invalid decision',
+                'valid_decisions': valid_decisions
+            }), 400
+
+        feedback_record = {
+            'execution_id': data['execution_id'],
+            'transaction_id': data['transaction_id'],
+            'reviewer': data['reviewer'],
+            'decision': data['decision'],
+            'notes': data.get('notes', ''),
+            'reviewed_at': datetime.now().isoformat(),
+            'reviewed': True
+        }
+
+        # Store feedback in database
+        try:
+            supabase.table('transaction_feedback').insert(feedback_record).execute()
+            logger.info(f"Feedback recorded for transaction {data['transaction_id']} by {data['reviewer']}")
+        except Exception as e:
+            logger.warning(f"Database storage failed: {e}")
+            # Continue even if DB fails
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Feedback recorded successfully',
+            'feedback': feedback_record
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Feedback submission error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/transaction-feedback/<execution_id>', methods=['GET'])
+#@require_api_key
+def get_transaction_feedback(execution_id):
+    """
+    Retrieve feedback for transactions from a specific analysis execution
+
+    Query parameters:
+    - transaction_id (optional): Get feedback for specific transaction
+    """
+    try:
+        transaction_id = request.args.get('transaction_id')
+
+        query = supabase.table('transaction_feedback').select('*').eq('execution_id', execution_id)
+
+        if transaction_id:
+            query = query.eq('transaction_id', transaction_id)
+
+        response = query.execute()
+
+        return jsonify({
+            'execution_id': execution_id,
+            'feedback_count': len(response.data),
+            'feedback': response.data
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Feedback retrieval error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/train-models', methods=['POST'])
