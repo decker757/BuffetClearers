@@ -56,40 +56,91 @@
       </div>
 
       <div v-else>
+        <!-- Audit Info -->
+        <div class="alert alert-info mb-3">
+          <small>
+            <strong>Execution ID:</strong> {{ results.execution_id }}<br />
+            <strong>Analysis Timestamp:</strong> {{ new Date(results.analysis_timestamp).toLocaleString() }}<br />
+            <strong>Data Source:</strong> {{ results.data_source }}
+          </small>
+        </div>
+
         <p class="text-muted mb-3">
           Total Transactions: <strong>{{ results.total_transactions }}</strong><br />
-          Method: <strong>{{ results.method }}</strong><br />
-          Timestamp: <strong>{{ new Date(results.analysis_timestamp).toLocaleString() }}</strong>
+          Method: <strong>{{ results.analysis_config?.method || 'both' }}</strong>
         </p>
 
-        <div v-if="results.xgboost" class="mb-4">
+        <!-- Summary Statistics -->
+        <div v-if="results.summary_statistics" class="row mb-4">
+          <div class="col-md-4">
+            <div class="card bg-light border-0 p-3">
+              <h6 class="text-muted small mb-2">Fraud Score (Avg)</h6>
+              <h4 class="mb-0">{{ results.summary_statistics.fraud_scores?.average?.toFixed(1) || 'N/A' }}</h4>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card bg-danger text-white border-0 p-3">
+              <h6 class="small mb-2">High Risk</h6>
+              <h4 class="mb-0">{{ results.summary_statistics.risk_categories?.high || 0 }}</h4>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <div class="card bg-warning border-0 p-3">
+              <h6 class="small mb-2">Total Alerts</h6>
+              <h4 class="mb-0">{{ results.summary_statistics.total_alerts_triggered || 0 }}</h4>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="results.model_results?.xgboost" class="mb-4">
           <h6 class="fw-bold text-primary">XGBoost Results</h6>
           <ul>
-            <li>Suspicious Transactions: {{ results.xgboost.suspicious_count }}</li>
-            <li>Suspicious Percentage: {{ results.xgboost.suspicious_percentage }}%</li>
+            <li>Suspicious Transactions: {{ results.model_results.xgboost.suspicious_count }}</li>
+            <li>Suspicious Percentage: {{ results.model_results.xgboost.suspicious_percentage }}%</li>
+            <li>Risk Distribution:
+              <span class="badge bg-danger ms-2">High: {{ results.model_results.xgboost.risk_distribution?.high || 0 }}</span>
+              <span class="badge bg-warning text-dark ms-1">Med: {{ results.model_results.xgboost.risk_distribution?.medium || 0 }}</span>
+              <span class="badge bg-success ms-1">Low: {{ results.model_results.xgboost.risk_distribution?.low || 0 }}</span>
+            </li>
           </ul>
         </div>
 
-        <div v-if="results.isolation_forest" class="mb-4">
+        <div v-if="results.model_results?.isolation_forest" class="mb-4">
           <h6 class="fw-bold text-danger">Isolation Forest Results</h6>
           <ul>
-            <li>Anomalies Detected: {{ results.isolation_forest.anomaly_count }}</li>
-            <li>Anomaly Percentage: {{ results.isolation_forest.anomaly_percentage }}%</li>
+            <li>Anomalies Detected: {{ results.model_results.isolation_forest.anomaly_count }}</li>
+            <li>Anomaly Percentage: {{ results.model_results.isolation_forest.anomaly_percentage }}%</li>
+            <li>Severity Distribution:
+              <span class="badge bg-danger ms-2">High: {{ results.model_results.isolation_forest.severity_distribution?.high || 0 }}</span>
+              <span class="badge bg-warning text-dark ms-1">Med: {{ results.model_results.isolation_forest.severity_distribution?.medium || 0 }}</span>
+              <span class="badge bg-success ms-1">Low: {{ results.model_results.isolation_forest.severity_distribution?.low || 0 }}</span>
+            </li>
           </ul>
         </div>
 
         <div v-if="results.consensus" class="mb-4">
-          <h6 class="fw-bold text-success">Consensus</h6>
+          <h6 class="fw-bold text-success">Consensus (High Confidence)</h6>
           <ul>
-            <li>Flagged by Both Models: {{ results.consensus.flagged_by_both }}</li>
-            <li>XGBoost Only: {{ results.consensus.flagged_by_xgboost_only }}</li>
-            <li>Isolation Forest Only: {{ results.consensus.flagged_by_isolation_forest_only }}</li>
+            <li>High Confidence: {{ results.consensus.high_confidence_count || 0 }} transactions ({{ results.consensus.high_confidence_percentage || 0 }}%)</li>
           </ul>
         </div>
 
-        <!-- Suspicious Table -->
-        <div v-if="suspiciousTransactions.length" class="mt-4">
-          <h6 class="fw-semibold mb-3">Flagged Transactions</h6>
+        <!-- Regulatory Compliance -->
+        <div v-if="results.summary_statistics?.regulatory_compliance" class="mb-4">
+          <h6 class="fw-bold text-warning">Regulatory Compliance</h6>
+          <ul>
+            <li>Total Violations: {{ results.summary_statistics.regulatory_compliance.total_violations }}</li>
+            <li>Transactions with Violations: {{ results.summary_statistics.regulatory_compliance.transactions_with_violations }}</li>
+            <li>Compliance Rate: {{ results.summary_statistics.regulatory_compliance.compliance_rate?.toFixed(1) }}%</li>
+          </ul>
+        </div>
+
+        <!-- Enhanced Transactions Table (Top 100 by risk) -->
+        <div v-if="enhancedTransactions.length" class="mt-4">
+          <h6 class="fw-semibold mb-3">
+            Top Flagged Transactions
+            <span class="badge bg-secondary">{{ enhancedTransactions.length }}</span>
+          </h6>
           <div class="table-responsive">
             <table class="table table-hover align-middle">
               <thead class="table-light">
@@ -97,41 +148,67 @@
                   <th>#</th>
                   <th>Transaction ID</th>
                   <th>Amount</th>
-                  <th>Probability / Score</th>
-                  <th>Risk Level</th>
+                  <th>Fraud Score</th>
+                  <th>Risk Category</th>
+                  <th>Alerts</th>
+                  <th>Violations</th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="(tx, i) in suspiciousTransactions"
+                  v-for="(tx, i) in enhancedTransactions.slice(0, 20)"
                   :key="i"
                   :class="{
-                    'table-danger': tx.risk_level === 'High' || tx.anomaly_severity === 'High',
-                    'table-warning': tx.risk_level === 'Medium' || tx.anomaly_severity === 'Medium'
+                    'table-danger': tx.risk_category === 'CRITICAL',
+                    'table-warning': tx.risk_category === 'HIGH' || tx.risk_category === 'MEDIUM'
                   }"
                 >
                   <td>{{ i + 1 }}</td>
-                  <td>{{ tx.transaction_id || '—' }}</td>
-                  <td>{{ tx.amount?.toLocaleString() || '—' }}</td>
+                  <td><small class="font-monospace">{{ tx.transaction_id || '—' }}</small></td>
+                  <td>${{ (tx.amount || 0).toLocaleString() }}</td>
                   <td>
-                    {{ tx.suspicion_probability?.toFixed?.(3) || tx.anomaly_score?.toFixed?.(3) || '—' }}
+                    <strong :class="{
+                      'text-danger': tx.fraud_risk_score >= 80,
+                      'text-warning': tx.fraud_risk_score >= 60 && tx.fraud_risk_score < 80,
+                      'text-secondary': tx.fraud_risk_score < 60
+                    }">
+                      {{ tx.fraud_risk_score?.toFixed(1) || '—' }}
+                    </strong>
                   </td>
                   <td>
                     <span
                       class="badge"
                       :class="{
-                        'bg-danger': tx.risk_level === 'High' || tx.anomaly_severity === 'High',
-                        'bg-warning text-dark': tx.risk_level === 'Medium' || tx.anomaly_severity === 'Medium',
-                        'bg-success': tx.risk_level === 'Low' || tx.anomaly_severity === 'Low'
+                        'bg-danger': tx.risk_category === 'CRITICAL',
+                        'bg-warning text-dark': tx.risk_category === 'HIGH',
+                        'bg-info text-dark': tx.risk_category === 'MEDIUM',
+                        'bg-secondary': tx.risk_category === 'LOW'
                       }"
                     >
-                      {{ tx.risk_level || tx.anomaly_severity || '—' }}
+                      {{ tx.risk_category || '—' }}
                     </span>
+                  </td>
+                  <td>
+                    <span class="badge bg-dark">{{ tx.alert_count || 0 }}</span>
+                    <small v-if="tx.alerts && tx.alerts.length" class="d-block text-muted mt-1">
+                      {{ tx.alerts[0]?.rule || '' }}
+                    </small>
+                  </td>
+                  <td>
+                    <span v-if="tx.violation_count" class="badge bg-warning text-dark">
+                      {{ tx.violation_count }}
+                    </span>
+                    <span v-else class="text-muted">—</span>
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
+
+          <p class="text-muted small mt-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Showing top 20 of {{ enhancedTransactions.length }} flagged transactions, sorted by fraud risk score
+          </p>
         </div>
       </div>
     </section>
@@ -196,8 +273,14 @@ function resetAnalysis() {
   results.value = null;
 }
 
-const suspiciousTransactions = computed(() => {
+// Use enhanced_transactions from new API response
+const enhancedTransactions = computed(() => {
   if (!results.value) return [];
+  // New enhanced API returns enhanced_transactions array
+  if (results.value.enhanced_transactions) {
+    return results.value.enhanced_transactions;
+  }
+  // Fallback for old API format
   const all = [];
   if (results.value.xgboost?.suspicious_transactions)
     all.push(...results.value.xgboost.suspicious_transactions);
