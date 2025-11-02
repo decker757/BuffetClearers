@@ -139,14 +139,14 @@ def predict_transactions(transactions_df, model=None, label_encoders=None, inclu
     ]
 
     feature_cols = numeric_cols + categorical_cols
-    X = df[feature_cols]
+    X = df[feature_cols].copy()  # Use .copy() to avoid SettingWithCopyWarning
 
     # Encode categorical features
     for col in categorical_cols:
         if col in label_encoders:
             le = label_encoders[col]
             # Handle unseen categories
-            X[col] = X[col].astype(str).apply(
+            X.loc[:, col] = X[col].astype(str).apply(
                 lambda x: le.transform([x])[0] if x in le.classes_ else -1
             )
 
