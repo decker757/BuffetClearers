@@ -41,37 +41,43 @@
       </div>
     </div>
 
-    <!-- Results -->
-    <div v-if="Object.keys(result).length" class="card shadow-sm p-4">
-      <h6 class="fw-semibold mb-3 text-primary">Analysis Results</h6>
+    <!-- Simplified Results -->
+    <div v-if="summary" class="card shadow-sm p-4">
+      <h5 class="fw-bold text-primary mb-3">{{ summary.fileName }}</h5>
+      <p class="text-muted small mb-2">
+        Analyzed on: {{ new Date(summary.analysisTime).toLocaleString() }}
+      </p>
 
-      <div class="result-table">
-        <div
-          v-for="(value, key) in result"
-          :key="key"
-          class="result-row mb-2"
-        >
-          <strong class="text-capitalize">{{ formatKey(key) }}:</strong>
-          <span>
-            <template v-if="Array.isArray(value)">
-              <ul class="mt-1 mb-1">
-                <li v-for="(item, idx) in value" :key="idx">
-                  {{ formatValue(item) }}
-                </li>
-              </ul>
-            </template>
-            <template v-else-if="typeof value === 'object' && value !== null">
-              <ul class="mt-1 mb-1 ps-3">
-                <li v-for="(subVal, subKey) in value" :key="subKey">
-                  <strong>{{ formatKey(subKey) }}:</strong> {{ formatValue(subVal) }}
-                </li>
-              </ul>
-            </template>
-            <template v-else>
-              {{ formatValue(value) }}
-            </template>
-          </span>
-        </div>
+      <div class="d-flex flex-wrap gap-3 mb-3">
+        <div><strong>Risk Score:</strong> {{ summary.riskScore }}</div>
+        <div><strong>Severity:</strong> {{ summary.maxSeverity }}</div>
+        <div><strong>Status:</strong> {{ summary.status }}</div>
+      </div>
+
+      <div class="alert alert-warning mb-3" v-if="summary.recommendation">
+        <strong>Recommendation:</strong> {{ summary.recommendation }}
+      </div>
+
+      <h6 class="fw-semibold text-secondary">Action Items</h6>
+      <ul class="mb-3">
+        <li v-for="(a, i) in summary.actionItems" :key="i">
+          <strong>{{ a.action }}</strong> — <em>{{ a.assignee }}</em>
+          (Priority: {{ a.priority }})
+        </li>
+      </ul>
+
+      <h6 class="fw-semibold text-secondary">Key Findings</h6>
+      <ul class="small">
+        <li v-for="(f, i) in summary.keyFindings" :key="i">{{ f }}</li>
+      </ul>
+
+      <h6 class="fw-semibold text-secondary mt-3">Risk Components</h6>
+      <div v-for="(rf, i) in summary.riskFactors" :key="i" class="mb-2">
+        <strong>{{ rf.component }}</strong> — {{ rf.severity }} (Score:
+        {{ rf.score }})
+        <ul class="small">
+          <li v-for="(iss, j) in rf.issues" :key="j">{{ iss }}</li>
+        </ul>
       </div>
 
       <details class="mt-3">
@@ -92,6 +98,7 @@ const fileData = ref(null);
 const analyzing = ref(false);
 const progress = ref(0);
 const result = ref({});
+const summary = ref(null);
 
 const prettyResult = computed(() => JSON.stringify(result.value, null, 2));
 
@@ -101,16 +108,7 @@ function handleFile(e) {
   fileName.value = file.name;
   fileData.value = file;
   result.value = {};
-}
-
-function formatKey(key) {
-  return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-}
-
-function formatValue(value) {
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") return value.toFixed(2);
-  return value;
+  summary.value = null;
 }
 
 async function analyze() {
@@ -122,6 +120,7 @@ async function analyze() {
   analyzing.value = true;
   progress.value = 10;
   result.value = {};
+  summary.value = null;
 
   try {
     const formData = new FormData();
@@ -146,6 +145,32 @@ async function analyze() {
 
     progress.value = 100;
     result.value = response.data;
+
+    // Extract simplified summary
+    const raw = response.data;
+    summary.value = {
+      fileName: raw?.file_metadata?.file_name || "Unknown",
+      analysisTime: raw?.analysis_timestamp || "-",
+      riskScore: raw?.summary?.overall_risk_score || 0,
+      maxSeverity: raw?.summary?.max_severity || "N/A",
+      recommendation: raw?.summary?.recommendation || "No recommendation",
+      status: raw?.summary?.status || "UNKNOWN",
+      actionItems:
+        raw?.action_items?.map((a) => ({
+          action: a.action,
+          assignee: a.assignee,
+          priority: a.priority,
+        })) || [],
+      keyFindings:
+        raw?.detailed_analysis?.format_validation?.key_findings || [],
+      riskFactors:
+        raw?.risk_factors?.map((r) => ({
+          component: r.component,
+          severity: r.severity,
+          score: r.score,
+          issues: r.issues?.slice(0, 3) || [],
+        })) || [],
+    };
   } catch (err) {
     console.error("Error analyzing file:", err.response?.data || err.message);
     alert("Error contacting backend at /api/validate or /api/validate/image");
@@ -170,12 +195,14 @@ async function analyze() {
   background-color: #0d6efd;
   transition: width 0.3s ease;
 }
-.result-table {
-  line-height: 1.6;
+ul {
+  list-style-type: none;
+  padding-left: 1.2em;
 }
-.result-row strong {
-  display: inline-block;
-  min-width: 180px;
+ul li {
+  margin-bottom: 3px;
+}
+strong {
   color: #0d6efd;
 }
 pre {
