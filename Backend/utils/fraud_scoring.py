@@ -1,14 +1,17 @@
 """
 Fraud Scoring and Alert Rules
 Combines multiple model outputs and applies rule-based alerts
+Integrates with Supabase for dynamic rule management
 """
 import pandas as pd
+from typing import Optional, Dict, List
+from supabase import Client
 
 
 class FraudScorer:
-    """Unified fraud risk scoring system"""
+    """Unified fraud risk scoring system with Supabase integration"""
 
-    # Alert thresholds
+    # Default alert thresholds (fallback if Supabase unavailable)
     ALERT_RULES = {
         'high_value': {'threshold': 1000000, 'weight': 25, 'description': 'Transaction amount exceeds $1M'},
         'very_high_value': {'threshold': 10000000, 'weight': 40, 'description': 'Transaction amount exceeds $10M'},
@@ -26,8 +29,105 @@ class FraudScorer:
     # High-risk countries (FATF grey/black list examples)
     HIGH_RISK_COUNTRIES = ['KP', 'IR', 'SY', 'MM', 'AF', 'YE', 'IQ', 'SS']
 
-    @staticmethod
-    def calculate_unified_fraud_score(xgb_prob=None, iso_score=None, alerts=None):
+    def __init__(self, supabase_client: Optional[Client] = None):
+        """
+        Initialize FraudScorer with optional Supabase integration
+
+        Args:
+            supabase_client: Optional Supabase client for dynamic rule loading
+        """
+        self.supabase = supabase_client
+        self.supabase_rules = []
+
+        if self.supabase:
+            self.load_rules_from_supabase()
+
+    def load_rules_from_supabase(self) -> bool:
+        """
+        Load AML rules from Supabase database
+
+        Returns:
+            True if rules loaded successfully, False otherwise
+        """
+        if not self.supabase:
+            print("⚠️ No Supabase client configured")
+            return False
+
+        try:
+            # Fetch threshold-based rules from aml_rules table
+            response = self.supabase.table('aml_rules').select(
+                'rule_id, title, description, rule_type, threshold_amount, '
+                'threshold_currency, conditions, confidence'
+            ).eq('rule_type', 'threshold_reporting').execute()
+
+            self.supabase_rules = response.data
+            print(f"✅ Loaded {len(self.supabase_rules)} rules from Supabase")
+
+            # Update ALERT_RULES dynamically from Supabase
+            self._sync_threshold_rules()
+
+            return True
+
+        except Exception as e:
+            print(f"⚠️ Failed to load rules from Supabase: {e}")
+            return False
+
+    def _sync_threshold_rules(self):
+        """
+        Synchronize threshold rules from Supabase into ALERT_RULES
+        Maps Supabase rules to the internal alert system
+        """
+        for rule in self.supabase_rules:
+            rule_id = rule.get('rule_id')
+            threshold_amount = rule.get('threshold_amount')
+
+            if threshold_amount and rule_id:
+                # Create a standardized rule entry
+                self.ALERT_RULES[rule_id] = {
+                    'threshold': float(threshold_amount),
+                    'weight': 20,  # Default weight, can be adjusted
+                    'description': rule.get('description', rule.get('title', '')),
+                    'currency': rule.get('threshold_currency', 'USD'),
+                    'confidence': rule.get('confidence', 0.5),
+                    'source': 'supabase'
+                }
+
+        print(f"✅ Synchronized {len([r for r in self.ALERT_RULES.values() if r.get('source') == 'supabase'])} rules from Supabase")
+
+    def get_applicable_rules(self, transaction: Dict) -> List[Dict]:
+        """
+        Get applicable Supabase rules for a given transaction
+
+        Args:
+            transaction: Transaction dictionary
+
+        Returns:
+            List of applicable rules with details
+        """
+        if not self.supabase:
+            return []
+
+        applicable_rules = []
+        amount = transaction.get('amount', 0)
+        currency = transaction.get('currency', 'USD')
+
+        for rule in self.supabase_rules:
+            threshold = rule.get('threshold_amount')
+            rule_currency = rule.get('threshold_currency', 'USD')
+
+            # Simple threshold check (can be enhanced with currency conversion)
+            if threshold and currency == rule_currency and amount >= threshold:
+                applicable_rules.append({
+                    'rule_id': rule['rule_id'],
+                    'title': rule['title'],
+                    'description': rule['description'],
+                    'threshold': threshold,
+                    'confidence': rule.get('confidence', 0.5)
+                })
+
+        return applicable_rules
+
+    def calculate_unified_fraud_score(self, xgb_prob=None, iso_score=None, alerts=None):
         """
         Calculate unified fraud risk score (0-100)
 
@@ -67,8 +167,7 @@ class FraudScorer:
 
         return min(100, max(0, score))
 
-    @staticmethod
-    def check_alert_rules(transaction):
+    def check_alert_rules(self, transaction):
         """
         Check transaction against alert rules
 
@@ -90,49 +189,49 @@ class FraudScorer:
 
         # High value alerts
         amount = transaction.get('amount', 0)
-        if amount > FraudScorer.ALERT_RULES['very_high_value']['threshold']:
+        if amount > self.ALERT_RULES['very_high_value']['threshold']:
             alerts.append({
                 'rule': 'very_high_value',
                 'severity': 'critical',
-                'description': FraudScorer.ALERT_RULES['very_high_value']['description'],
+                'description': self.ALERT_RULES['very_high_value']['description'],
                 'value': float(amount),
-                'weight': FraudScorer.ALERT_RULES['very_high_value']['weight']
+                'weight': self.ALERT_RULES['very_high_value']['weight']
             })
-        elif amount > FraudScorer.ALERT_RULES['high_value']['threshold']:
+        elif amount > self.ALERT_RULES['high_value']['threshold']:
             alerts.append({
                 'rule': 'high_value',
                 'severity': 'high',
-                'description': FraudScorer.ALERT_RULES['high_value']['description'],
+                'description': self.ALERT_RULES['high_value']['description'],
                 'value': float(amount),
-                'weight': FraudScorer.ALERT_RULES['high_value']['weight']
+                'weight': self.ALERT_RULES['high_value']['weight']
             })
 
         # FX spread alerts
-        if fx_anomaly > FraudScorer.ALERT_RULES['extreme_fx_spread']['threshold']:
+        if fx_anomaly > self.ALERT_RULES['extreme_fx_spread']['threshold']:
             alerts.append({
                 'rule': 'extreme_fx_spread',
                 'severity': 'critical',
-                'description': FraudScorer.ALERT_RULES['extreme_fx_spread']['description'],
+                'description': self.ALERT_RULES['extreme_fx_spread']['description'],
                 'value': float(fx_anomaly),
-                'weight': FraudScorer.ALERT_RULES['extreme_fx_spread']['weight']
+                'weight': self.ALERT_RULES['extreme_fx_spread']['weight']
             })
-        elif fx_anomaly > FraudScorer.ALERT_RULES['unusual_fx_spread']['threshold']:
+        elif fx_anomaly > self.ALERT_RULES['unusual_fx_spread']['threshold']:
             alerts.append({
                 'rule': 'unusual_fx_spread',
                 'severity': 'medium',
-                'description': FraudScorer.ALERT_RULES['unusual_fx_spread']['description'],
+                'description': self.ALERT_RULES['unusual_fx_spread']['description'],
                 'value': float(fx_anomaly),
-                'weight': FraudScorer.ALERT_RULES['unusual_fx_spread']['weight']
+                'weight': self.ALERT_RULES['unusual_fx_spread']['weight']
             })
 
         # Daily ratio alert
-        if amount_ratio > FraudScorer.ALERT_RULES['large_daily_ratio']['threshold']:
+        if amount_ratio > self.ALERT_RULES['large_daily_ratio']['threshold']:
             alerts.append({
                 'rule': 'large_daily_ratio',
                 'severity': 'medium',
-                'description': FraudScorer.ALERT_RULES['large_daily_ratio']['description'],
+                'description': self.ALERT_RULES['large_daily_ratio']['description'],
                 'value': float(amount_ratio),
-                'weight': FraudScorer.ALERT_RULES['large_daily_ratio']['weight']
+                'weight': self.ALERT_RULES['large_daily_ratio']['weight']
             })
 
         # PEP alert
@@ -141,9 +240,9 @@ class FraudScorer:
             alerts.append({
                 'rule': 'pep_customer',
                 'severity': 'medium',
-                'description': FraudScorer.ALERT_RULES['pep_customer']['description'],
+                'description': self.ALERT_RULES['pep_customer']['description'],
                 'value': 'Yes',
-                'weight': FraudScorer.ALERT_RULES['pep_customer']['weight']
+                'weight': self.ALERT_RULES['pep_customer']['weight']
             })
 
         # High-risk customer
@@ -152,9 +251,9 @@ class FraudScorer:
             alerts.append({
                 'rule': 'high_risk_customer',
                 'severity': 'high',
-                'description': FraudScorer.ALERT_RULES['high_risk_customer']['description'],
+                'description': self.ALERT_RULES['high_risk_customer']['description'],
                 'value': transaction.get('customer_risk_rating'),
-                'weight': FraudScorer.ALERT_RULES['high_risk_customer']['weight']
+                'weight': self.ALERT_RULES['high_risk_customer']['weight']
             })
 
         # Travel rule incomplete
@@ -163,33 +262,33 @@ class FraudScorer:
             alerts.append({
                 'rule': 'travel_rule_incomplete',
                 'severity': 'low',
-                'description': FraudScorer.ALERT_RULES['travel_rule_incomplete']['description'],
+                'description': self.ALERT_RULES['travel_rule_incomplete']['description'],
                 'value': 'No',
-                'weight': FraudScorer.ALERT_RULES['travel_rule_incomplete']['weight']
+                'weight': self.ALERT_RULES['travel_rule_incomplete']['weight']
             })
 
         # High-risk countries
         originator = str(transaction.get('originator_country', '')).upper()
         beneficiary = str(transaction.get('beneficiary_country', '')).upper()
 
-        if originator in FraudScorer.HIGH_RISK_COUNTRIES or beneficiary in FraudScorer.HIGH_RISK_COUNTRIES:
+        if originator in self.HIGH_RISK_COUNTRIES or beneficiary in self.HIGH_RISK_COUNTRIES:
             alerts.append({
                 'rule': 'high_risk_country',
                 'severity': 'high',
-                'description': FraudScorer.ALERT_RULES['high_risk_country']['description'],
+                'description': self.ALERT_RULES['high_risk_country']['description'],
                 'value': f"{originator} -> {beneficiary}",
-                'weight': FraudScorer.ALERT_RULES['high_risk_country']['weight']
+                'weight': self.ALERT_RULES['high_risk_country']['weight']
             })
 
         # Frequent transactions
         txn_count = transaction.get('daily_cash_txn_count', 0)
-        if txn_count > FraudScorer.ALERT_RULES['frequent_transactions']['threshold']:
+        if txn_count > self.ALERT_RULES['frequent_transactions']['threshold']:
             alerts.append({
                 'rule': 'frequent_transactions',
                 'severity': 'low',
-                'description': FraudScorer.ALERT_RULES['frequent_transactions']['description'],
+                'description': self.ALERT_RULES['frequent_transactions']['description'],
                 'value': int(txn_count),
-                'weight': FraudScorer.ALERT_RULES['frequent_transactions']['weight']
+                'weight': self.ALERT_RULES['frequent_transactions']['weight']
             })
 
         # Round amount detection (e.g., exactly 100000, 1000000)
