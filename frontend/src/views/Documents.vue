@@ -41,7 +41,7 @@
       </div>
     </div>
 
-    <!-- Results -->
+    <!-- Results Section -->
     <div v-if="Object.keys(result).length" class="card shadow-sm p-4">
       <h6 class="fw-semibold mb-3 text-primary">Analysis Results</h6>
 
@@ -57,6 +57,18 @@
         <strong>Authenticity Score:</strong> {{ result.authenticity_score }}
       </div>
 
+      <div v-if="result.summary" class="mb-3">
+        <strong>Summary:</strong>
+        <p class="mt-1">{{ result.summary }}</p>
+      </div>
+
+      <div v-if="result.key_findings && result.key_findings.length" class="mt-3">
+        <strong>Key Findings:</strong>
+        <ul class="mt-2">
+          <li v-for="(f, i) in result.key_findings" :key="i">{{ f }}</li>
+        </ul>
+      </div>
+
       <div
         v-if="result.recommendations && result.recommendations.length"
         class="mt-3"
@@ -67,16 +79,17 @@
         </ul>
       </div>
 
+      <!-- Fallback JSON view -->
       <details class="mt-3">
         <summary class="fw-semibold">View Raw JSON Response</summary>
-        <pre class="bg-light p-3 mt-2 rounded small">{{ result }}</pre>
+        <pre class="bg-light p-3 mt-2 rounded small">{{ prettyResult }}</pre>
       </details>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { ref, computed } from "vue";
 import axios from "axios";
 
 const fileInput = ref(null);
@@ -85,6 +98,11 @@ const fileData = ref(null);
 const analyzing = ref(false);
 const progress = ref(0);
 const result = ref({});
+
+// Computed for pretty JSON display
+const prettyResult = computed(() => {
+  return JSON.stringify(result.value, null, 2);
+});
 
 function handleFile(e) {
   const file = e.target.files[0];
@@ -108,7 +126,7 @@ async function analyze() {
     const formData = new FormData();
     formData.append("file", fileData.value);
 
-    // Determine endpoint by file type
+    // Decide endpoint by file type
     const ext = fileName.value.toLowerCase().split(".").pop();
     const isImage = ["jpg", "jpeg", "png", "bmp", "tiff", "gif"].includes(ext);
     const endpoint = isImage
