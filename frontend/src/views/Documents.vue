@@ -1,175 +1,189 @@
 <template>
-  <div>
-    <h4 class="mb-4 fw-bold text-primary">Document & Image Corroboration</h4>
+  <div class="container py-4">
+    <h4 class="fw-bold text-primary mb-4">Document & Image Analysis</h4>
 
-    <!-- Upload Zone -->
-    <div class="card p-4 mb-4">
-      <FileUpload @files-selected="handleFiles" />
-      <div v-if="uploadedFiles.length" class="mt-3 text-end">
-        <button
-          class="btn btn-primary btn-lg px-4 analyze-btn"
-          :disabled="isAnalyzing"
-          @click="startAnalysis"
-        >
-          <i class="bi bi-cpu me-2"></i>
-          {{ isAnalyzing ? 'Analyzing...' : 'Analyze with Agentic AI' }}
-        </button>
+    <!-- Upload Section -->
+    <div class="card shadow-sm p-4 mb-4 text-center">
+      <input
+        ref="fileInput"
+        type="file"
+        accept=".pdf,.doc,.docx,.txt,image/*"
+        hidden
+        @change="handleFile"
+      />
+
+      <button class="btn btn-outline-primary mb-3" @click="fileInput.click()">
+        <i class="bi bi-upload me-2"></i>Select File
+      </button>
+
+      <div v-if="fileName" class="text-muted mb-3">
+        <i class="bi bi-file-earmark me-1"></i>{{ fileName }}
       </div>
-    </div>
 
-    <!-- Progress Bar -->
-    <div v-if="isAnalyzing" class="card p-4 mb-4">
-      <h6 class="fw-semibold mb-3">AI Analysis in Progress</h6>
-      <div class="progress" style="height: 20px;">
-        <div
-          class="progress-bar progress-bar-striped progress-bar-animated"
-          role="progressbar"
-          :style="{ width: progress + '%' }"
-        >
-          {{ progress }}%
+      <button
+        class="btn btn-primary px-4"
+        :disabled="!fileData || analyzing"
+        @click="analyze"
+      >
+        <i class="bi bi-cpu me-2"></i>
+        {{ analyzing ? "Analyzing…" : "Analyze File" }}
+      </button>
+
+      <!-- Progress Bar -->
+      <div v-if="analyzing" class="mt-4">
+        <div class="progress" style="height: 12px;">
+          <div
+            class="progress-bar progress-bar-striped progress-bar-animated"
+            :style="{ width: progress + '%' }"
+          ></div>
         </div>
-      </div>
-    </div>
-
-    <!-- Completed -->
-    <div
-      v-if="isCompleted"
-      class="alert alert-success d-flex align-items-center mt-4 shadow-sm"
-    >
-      <i class="bi bi-check-circle-fill fs-4 me-3"></i>
-      <div>
-        <strong>Analysis Complete</strong><br />
-        All uploaded documents have been successfully analyzed.
+        <small class="text-muted">Running AI analysis...</small>
       </div>
     </div>
 
     <!-- Results -->
-    <div v-if="results.length" class="card p-4 mt-4">
-      <h6 class="fw-semibold mb-3">Analysis Results</h6>
-      <div
-        v-for="(doc, i) in results"
-        :key="i"
-        class="border rounded p-3 mb-3 bg-light"
-      >
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="fw-semibold">{{ doc.name }}</span>
-          <span :class="riskBadge(doc.risk)" class="badge">{{ doc.risk }}</span>
-        </div>
-        <div class="progress" style="height:6px;">
-          <div
-            class="progress-bar"
-            :class="riskBar(doc.risk)"
-            :style="{ width: doc.score + '%' }"
-          ></div>
+    <div v-if="Object.keys(result).length" class="card shadow-sm p-4">
+      <h6 class="fw-semibold mb-3 text-primary">Analysis Results</h6>
+
+      <div class="result-table">
+        <div
+          v-for="(value, key) in result"
+          :key="key"
+          class="result-row mb-2"
+        >
+          <strong class="text-capitalize">{{ formatKey(key) }}:</strong>
+          <span>
+            <template v-if="Array.isArray(value)">
+              <ul class="mt-1 mb-1">
+                <li v-for="(item, idx) in value" :key="idx">
+                  {{ formatValue(item) }}
+                </li>
+              </ul>
+            </template>
+            <template v-else-if="typeof value === 'object' && value !== null">
+              <ul class="mt-1 mb-1 ps-3">
+                <li v-for="(subVal, subKey) in value" :key="subKey">
+                  <strong>{{ formatKey(subKey) }}:</strong> {{ formatValue(subVal) }}
+                </li>
+              </ul>
+            </template>
+            <template v-else>
+              {{ formatValue(value) }}
+            </template>
+          </span>
         </div>
       </div>
+
+      <details class="mt-3">
+        <summary class="fw-semibold">View Raw JSON Response</summary>
+        <pre class="bg-light p-3 mt-2 rounded small">{{ prettyResult }}</pre>
+      </details>
     </div>
   </div>
 </template>
 
 <script setup>
-import FileUpload from '../components/FileUpload.vue'
-import { ref } from 'vue'
+import { ref, computed } from "vue";
+import axios from "axios";
 
-const uploadedFiles = ref([])
-const results = ref([])
-const progress = ref(0)
-const isAnalyzing = ref(false)
-const isCompleted = ref(false)
+const fileInput = ref(null);
+const fileName = ref("");
+const fileData = ref(null);
+const analyzing = ref(false);
+const progress = ref(0);
+const result = ref({});
 
-function handleFiles(files) {
-console.log('Documents.vue received:', files)
-  uploadedFiles.value = files
-  isCompleted.value = false
-  results.value = []
+const prettyResult = computed(() => JSON.stringify(result.value, null, 2));
+
+function handleFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  fileName.value = file.name;
+  fileData.value = file;
+  result.value = {};
 }
 
-function startAnalysis() {
-  if (!uploadedFiles.value.length) return
-  isAnalyzing.value = true
-  progress.value = 0
-
-  // 🔹 Simulate backend progress
-  const interval = setInterval(() => {
-    progress.value += Math.floor(Math.random() * 10) + 5
-    if (progress.value >= 100) {
-      progress.value = 100
-      clearInterval(interval)
-      isAnalyzing.value = false
-      isCompleted.value = true
-
-      // 🔹 Mock AI risk scoring
-      results.value = uploadedFiles.value.map(f => ({
-        name: f.name,
-        risk: ['Low', 'Medium', 'High'][Math.floor(Math.random() * 3)],
-        score: Math.floor(Math.random() * 100)
-      }))
-    }
-  }, 400)
+function formatKey(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
-function riskBadge(risk) {
-  if (risk === 'High') return 'bg-danger'
-  if (risk === 'Medium') return 'bg-warning text-dark'
-  return 'bg-success'
+function formatValue(value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return value.toFixed(2);
+  return value;
 }
-function riskBar(risk) {
-  if (risk === 'High') return 'bg-danger'
-  if (risk === 'Medium') return 'bg-warning'
-  return 'bg-success'
+
+async function analyze() {
+  if (!fileData.value) {
+    alert("Please select a file first.");
+    return;
+  }
+
+  analyzing.value = true;
+  progress.value = 10;
+  result.value = {};
+
+  try {
+    const formData = new FormData();
+    formData.append("file", fileData.value);
+
+    const ext = fileName.value.toLowerCase().split(".").pop();
+    const isImage = ["jpg", "jpeg", "png", "bmp", "tiff", "gif"].includes(ext);
+    const endpoint = isImage
+      ? "http://localhost:5001/api/validate/image"
+      : "http://localhost:5001/api/validate";
+
+    const response = await axios.post(endpoint, formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      onUploadProgress: (event) => {
+        if (event.total)
+          progress.value = Math.min(
+            90,
+            Math.round((event.loaded / event.total) * 100)
+          );
+      },
+    });
+
+    progress.value = 100;
+    result.value = response.data;
+  } catch (err) {
+    console.error("Error analyzing file:", err.response?.data || err.message);
+    alert("Error contacting backend at /api/validate or /api/validate/image");
+  } finally {
+    analyzing.value = false;
+  }
 }
 </script>
 
 <style scoped>
-.analyze-btn {
-  position: relative;
-  font-weight: 600;
-  border: none;
-  color: #fff;
-  background: linear-gradient(270deg, #0072ff, #00c6ff);
-  background-size: 200% 200%;
-  border-radius: 0.75rem;
-  box-shadow: 0 0 10px rgba(0, 114, 255, 0.4);
-  transition: all 0.3s ease;
-  animation: gradientShift 3s ease infinite;
+.container {
+  max-width: 800px;
 }
-
-.analyze-btn:hover {
-  transform: translateY(-2px) scale(1.02);
-  box-shadow: 0 0 20px rgba(0, 183, 255, 0.6);
+.card {
+  border-radius: 12px;
 }
-
-.analyze-btn:disabled {
-  background: linear-gradient(270deg, #6c757d, #adb5bd);
-  box-shadow: none;
-  opacity: 0.8;
+.btn {
+  border-radius: 8px;
+  font-weight: 500;
 }
-
-@keyframes gradientShift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+.progress-bar {
+  background-color: #0d6efd;
+  transition: width 0.3s ease;
 }
-
-/* Progress bar glow while analyzing */
-.progress-bar-animated {
-  animation: progressPulse 1.5s infinite;
+.result-table {
+  line-height: 1.6;
 }
-
-@keyframes progressPulse {
-  0% { box-shadow: 0 0 5px rgba(0,183,255,0.4); }
-  50% { box-shadow: 0 0 15px rgba(0,183,255,0.8); }
-  100% { box-shadow: 0 0 5px rgba(0,183,255,0.4); }
+.result-row strong {
+  display: inline-block;
+  min-width: 180px;
+  color: #0d6efd;
 }
-
-/* Success alert animation */
-.alert-success {
-  animation: fadeIn 0.6s ease-out;
+pre {
+  background: #f8f9fa;
+  border-radius: 6px;
+  overflow-x: auto;
 }
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+.text-primary {
+  color: #0d6efd !important;
 }
 </style>
-
