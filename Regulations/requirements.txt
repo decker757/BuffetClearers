@@ -1,7 +1,0 @@
-flask==3.0.0
-flask-CORS==4.0.0
-flask-SocketIO==5.3.5
-
-python-dotenv==1.0.0
-
-supabase==2.3.0
