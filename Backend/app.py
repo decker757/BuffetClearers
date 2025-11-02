@@ -527,6 +527,243 @@ def clear_all_cache():
     }), 200
 
 
+@app.route('/api/analyze-transactions', methods=['POST'])
+#@require_api_key
+def analyze_transactions():
+    """
+    Analyze transactions using both XGBoost and Isolation Forest models
+
+    Request body can be either:
+    1. JSON with 'transactions' array
+    2. File upload (CSV file)
+
+    Query parameters:
+    - method: 'xgboost', 'isolation_forest', or 'both' (default: 'both')
+    - threshold: Suspicion threshold for XGBoost (default: 0.5)
+    - contamination: Anomaly percentage for Isolation Forest (default: 0.05)
+    """
+    try:
+        import pandas as pd
+        from XGBoost import train_model as train_xgb, predict_transactions, get_suspicious_transactions
+        from isolationforest import train_isolation_forest, detect_anomalies, get_anomalies
+
+        # Get parameters
+        method = request.args.get('method', 'both')
+        threshold = float(request.args.get('threshold', 0.5))
+        contamination = float(request.args.get('contamination', 0.05))
+
+        logger.info(f"=== Transaction analysis request - Method: {method} ===")
+
+        # Get transaction data - either from JSON or file upload
+        if 'file' in request.files:
+            # CSV file upload
+            file = request.files['file']
+
+            if file.filename == '':
+                return jsonify({'error': 'No file selected'}), 400
+
+            if not file.filename.endswith('.csv'):
+                return jsonify({'error': 'Only CSV files are supported'}), 400
+
+            # Save temporarily
+            uploads_dir = os.path.join(os.path.dirname(__file__), 'uploads')
+            os.makedirs(uploads_dir, exist_ok=True)
+            file_path = os.path.join(uploads_dir, file.filename)
+            file.save(file_path)
+
+            # Load CSV
+            transactions_df = pd.read_csv(file_path)
+
+            # Clean up
+            os.remove(file_path)
+
+            logger.info(f"Loaded {len(transactions_df)} transactions from CSV file")
+
+        elif request.is_json:
+            # JSON data
+            data = request.get_json()
+
+            if 'transactions' not in data:
+                return jsonify({'error': 'No transactions provided in request body'}), 400
+
+            transactions = data['transactions']
+            transactions_df = pd.DataFrame(transactions)
+
+            logger.info(f"Loaded {len(transactions_df)} transactions from JSON")
+
+        else:
+            return jsonify({'error': 'Please provide either JSON data or CSV file'}), 400
+
+        # Validate required columns
+        required_cols = ['amount', 'fx_applied_rate', 'fx_market_rate', 'daily_cash_total_customer', 'daily_cash_txn_count']
+        missing_cols = [col for col in required_cols if col not in transactions_df.columns]
+
+        if missing_cols:
+            return jsonify({
+                'error': 'Missing required columns',
+                'missing_columns': missing_cols,
+                'required_columns': required_cols
+            }), 400
+
+        results = {
+            'total_transactions': len(transactions_df),
+            'analysis_timestamp': datetime.now().isoformat(),
+            'method': method
+        }
+
+        # Run XGBoost analysis
+        if method in ['xgboost', 'both']:
+            logger.info("Running XGBoost analysis...")
+            try:
+                # Train model if not already trained
+                train_xgb()
+
+                # Predict
+                xgb_results = predict_transactions(transactions_df)
+                suspicious_xgb = xgb_results[xgb_results['suspicion_probability'] >= threshold]
+
+                results['xgboost'] = {
+                    'suspicious_count': len(suspicious_xgb),
+                    'suspicious_percentage': round(len(suspicious_xgb) / len(transactions_df) * 100, 2),
+                    'threshold': threshold,
+                    'suspicious_transactions': suspicious_xgb[[
+                        'transaction_id', 'amount', 'suspicion_probability', 'risk_level'
+                    ]].to_dict('records') if 'transaction_id' in suspicious_xgb.columns else [],
+                    'risk_distribution': {
+                        'high': int((xgb_results['risk_level'] == 'High').sum()),
+                        'medium': int((xgb_results['risk_level'] == 'Medium').sum()),
+                        'low': int((xgb_results['risk_level'] == 'Low').sum())
+                    }
+                }
+
+                logger.info(f"XGBoost found {len(suspicious_xgb)} suspicious transactions")
+
+            except Exception as e:
+                logger.error(f"XGBoost analysis failed: {e}", exc_info=True)
+                results['xgboost'] = {'error': str(e)}
+
+        # Run Isolation Forest analysis
+        if method in ['isolation_forest', 'both']:
+            logger.info("Running Isolation Forest analysis...")
+            try:
+                # Train model if not already trained
+                train_isolation_forest(contamination=contamination)
+
+                # Detect anomalies
+                iso_results = detect_anomalies(transactions_df, contamination=contamination)
+                anomalies = iso_results[iso_results['is_anomaly'] == 1]
+
+                results['isolation_forest'] = {
+                    'anomaly_count': len(anomalies),
+                    'anomaly_percentage': round(len(anomalies) / len(transactions_df) * 100, 2),
+                    'contamination': contamination,
+                    'anomalous_transactions': anomalies[[
+                        'transaction_id', 'amount', 'anomaly_score', 'anomaly_severity'
+                    ]].to_dict('records') if 'transaction_id' in anomalies.columns else [],
+                    'severity_distribution': {
+                        'high': int((iso_results['anomaly_severity'] == 'High').sum()) if 'anomaly_severity' in iso_results.columns else 0,
+                        'medium': int((iso_results['anomaly_severity'] == 'Medium').sum()) if 'anomaly_severity' in iso_results.columns else 0,
+                        'low': int((iso_results['anomaly_severity'] == 'Low').sum()) if 'anomaly_severity' in iso_results.columns else 0
+                    }
+                }
+
+                logger.info(f"Isolation Forest found {len(anomalies)} anomalies")
+
+            except Exception as e:
+                logger.error(f"Isolation Forest analysis failed: {e}", exc_info=True)
+                results['isolation_forest'] = {'error': str(e)}
+
+        # If both methods were used, find consensus
+        if method == 'both' and 'xgboost' in results and 'isolation_forest' in results:
+            if 'error' not in results['xgboost'] and 'error' not in results['isolation_forest']:
+                xgb_suspicious_ids = set()
+                iso_anomaly_ids = set()
+
+                if 'transaction_id' in transactions_df.columns:
+                    xgb_results = predict_transactions(transactions_df)
+                    iso_results = detect_anomalies(transactions_df, contamination=contamination)
+
+                    xgb_suspicious_ids = set(xgb_results[xgb_results['suspicion_probability'] >= threshold]['transaction_id'])
+                    iso_anomaly_ids = set(iso_results[iso_results['is_anomaly'] == 1]['transaction_id'])
+
+                    consensus_ids = xgb_suspicious_ids.intersection(iso_anomaly_ids)
+
+                    results['consensus'] = {
+                        'flagged_by_both': len(consensus_ids),
+                        'flagged_by_xgboost_only': len(xgb_suspicious_ids - iso_anomaly_ids),
+                        'flagged_by_isolation_forest_only': len(iso_anomaly_ids - xgb_suspicious_ids),
+                        'high_confidence_transactions': list(consensus_ids)
+                    }
+
+                    logger.info(f"Consensus: {len(consensus_ids)} transactions flagged by both models")
+
+        logger.info("=== Transaction analysis complete ===")
+        return jsonify(results), 200
+
+    except Exception as e:
+        logger.error(f"Transaction analysis error: {type(e).__name__}: {e}", exc_info=True)
+        return jsonify({
+            'error': f'Transaction analysis failed: {str(e)}',
+            'error_type': type(e).__name__
+        }), 500
+
+
+@app.route('/api/train-models', methods=['POST'])
+#@require_api_key
+def train_models():
+    """
+    Manually trigger training of ML models
+
+    Query parameters:
+    - model: 'xgboost', 'isolation_forest', or 'both' (default: 'both')
+    """
+    try:
+        from XGBoost import train_model as train_xgb
+        from isolationforest import train_isolation_forest
+
+        model_type = request.args.get('model', 'both')
+
+        logger.info(f"=== Model training request - Type: {model_type} ===")
+
+        results = {
+            'trained_at': datetime.now().isoformat(),
+            'model_type': model_type
+        }
+
+        if model_type in ['xgboost', 'both']:
+            logger.info("Training XGBoost model...")
+            try:
+                model, encoders, features, metrics = train_xgb()
+                results['xgboost'] = {
+                    'status': 'success',
+                    'metrics': metrics
+                }
+                logger.info("XGBoost training complete")
+            except Exception as e:
+                logger.error(f"XGBoost training failed: {e}")
+                results['xgboost'] = {'status': 'failed', 'error': str(e)}
+
+        if model_type in ['isolation_forest', 'both']:
+            logger.info("Training Isolation Forest model...")
+            try:
+                pipeline, preprocessor, metrics = train_isolation_forest()
+                results['isolation_forest'] = {
+                    'status': 'success',
+                    'metrics': metrics if metrics else 'No evaluation metrics (no ground truth labels)'
+                }
+                logger.info("Isolation Forest training complete")
+            except Exception as e:
+                logger.error(f"Isolation Forest training failed: {e}")
+                results['isolation_forest'] = {'status': 'failed', 'error': str(e)}
+
+        logger.info("=== Model training complete ===")
+        return jsonify(results), 200
+
+    except Exception as e:
+        logger.error(f"Model training error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     logger.info("Starting Document Corroboration API v2.0")
     logger.info(f"Log files: ./logs/")
