@@ -625,6 +625,10 @@ def analyze_transactions():
 
         # Import fraud scoring utilities
         from utils.fraud_scoring import FraudScorer
+        from utils.regulatory_checker import RegulatoryChecker
+
+        # Initialize regulatory checker
+        regulatory_checker = RegulatoryChecker(supabase)
 
         # Initialize enhanced results structure with audit traceability
         results = {
@@ -743,8 +747,28 @@ def analyze_transactions():
             alerts = FraudScorer.check_alert_rules(row)
             all_alerts.extend(alerts)
 
-            # Calculate unified fraud score
+            # Check regulatory compliance
+            regulatory_violations = regulatory_checker.check_transaction(row.to_dict())
+
+            # Calculate unified fraud score (boost if regulatory violations found)
             fraud_score = FraudScorer.calculate_unified_fraud_score(xgb_prob, iso_score, alerts)
+
+            # Boost fraud score for regulatory violations
+            if regulatory_violations:
+                # Add 10-20 points per violation depending on severity
+                for violation in regulatory_violations:
+                    severity = violation.get('severity', 'medium')
+                    if severity == 'critical':
+                        fraud_score += 20
+                    elif severity == 'high':
+                        fraud_score += 15
+                    elif severity == 'medium':
+                        fraud_score += 10
+                    else:
+                        fraud_score += 5
+
+                fraud_score = min(100, fraud_score)  # Cap at 100
+
             fraud_scores.append(fraud_score)
             risk_category = FraudScorer.get_risk_category(fraud_score)
 
@@ -760,6 +784,8 @@ def analyze_transactions():
                 },
                 'alerts': alerts,
                 'alert_count': len(alerts),
+                'regulatory_violations': regulatory_violations,
+                'violation_count': len(regulatory_violations),
             }
 
             # Add contextual fields if available
@@ -796,6 +822,11 @@ def analyze_transactions():
             reverse=True
         )[:100]
 
+        # Collect all regulatory violations for summary
+        all_regulatory_violations = []
+        for txn in enhanced_transactions:
+            all_regulatory_violations.extend(txn.get('regulatory_violations', []))
+
         # Summary statistics
         results['summary_statistics'] = {
             'total_transactions': len(transactions_df),
@@ -814,7 +845,12 @@ def analyze_transactions():
             },
             'high_risk_percentage': round(sum(1 for s in fraud_scores if s >= 60) / len(fraud_scores) * 100, 2) if fraud_scores else 0,
             'total_alerts_triggered': len(all_alerts),
-            'unique_alert_types': len(set(alert['rule'] for alert in all_alerts))
+            'unique_alert_types': len(set(alert['rule'] for alert in all_alerts)),
+            'regulatory_compliance': {
+                'total_violations': len(all_regulatory_violations),
+                'transactions_with_violations': sum(1 for txn in enhanced_transactions if txn.get('violation_count', 0) > 0),
+                'compliance_rate': round((1 - sum(1 for txn in enhanced_transactions if txn.get('violation_count', 0) > 0) / len(enhanced_transactions)) * 100, 2) if enhanced_transactions else 100
+            }
         }
 
         # Alert summary
@@ -829,11 +865,30 @@ def analyze_transactions():
                 }
             alert_summary[rule]['count'] += 1
 
+        # Regulatory violation summary
+        regulatory_summary = {}
+        for violation in all_regulatory_violations:
+            rule_id = violation.get('rule_id', 'unknown')
+            if rule_id not in regulatory_summary:
+                regulatory_summary[rule_id] = {
+                    'count': 0,
+                    'severity': violation.get('severity', 'unknown'),
+                    'title': violation.get('rule_title', 'Unknown Rule'),
+                    'source': violation.get('rule_source', 'Unknown Source')
+                }
+            regulatory_summary[rule_id]['count'] += 1
+
         results['alerts'] = {
             'summary': alert_summary,
             'total_triggered': len(all_alerts),
             'critical_alerts': sum(1 for a in all_alerts if a['severity'] == 'critical'),
-            'high_alerts': sum(1 for a in all_alerts if a['severity'] == 'high')
+            'high_alerts': sum(1 for a in all_alerts if a['severity'] == 'high'),
+            'regulatory_violations': {
+                'summary': regulatory_summary,
+                'total': len(all_regulatory_violations),
+                'critical': sum(1 for v in all_regulatory_violations if v.get('severity') == 'critical'),
+                'high': sum(1 for v in all_regulatory_violations if v.get('severity') == 'high')
+            }
         }
 
         # Consensus analysis if both models used
@@ -1068,6 +1123,327 @@ def get_transaction_feedback(execution_id):
 
     except Exception as e:
         logger.error(f"Feedback retrieval error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/regulations/scrape', methods=['POST'])
+#@require_api_key
+def scrape_regulations():
+    """
+    Scrape regulatory documents from a URL or trigger full pipeline
+
+    Option 1 - Scrape specific URL:
+    {
+        "url": "https://www.mas.gov.sg/regulation/notices/...",
+        "regulator_code": "MAS",
+        "auto_import": true
+    }
+
+    Option 2 - Run full scraping pipeline:
+    {
+        "mode": "pipeline",
+        "regulators": ["MAS", "FINMA", "HKMA"],
+        "max_docs_per_regulator": 20,
+        "auto_import": true
+    }
+    """
+    try:
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
+
+        data = request.get_json()
+        auto_import = data.get('auto_import', False)
+
+        # Option 1: Scrape specific URL
+        if 'url' in data:
+            url = data.get('url')
+            regulator_code = data.get('regulator_code', 'UNKNOWN')
+
+            if not url:
+                return jsonify({'error': 'URL is required'}), 400
+
+            logger.info(f"=== Scraping single URL: {url} ===")
+
+            # Simple scraping implementation
+            import requests
+            from bs4 import BeautifulSoup
+
+            try:
+                response = requests.get(url, verify=False, timeout=30)
+                response.raise_for_status()
+
+                # Save content
+                output_file = f'Regulations/scraped_{regulator_code}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.html'
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(response.text)
+
+                return jsonify({
+                    'status': 'success',
+                    'message': f'URL scraped successfully',
+                    'url': url,
+                    'output_file': output_file,
+                    'regulator': regulator_code,
+                    'content_length': len(response.text),
+                    'timestamp': datetime.now().isoformat()
+                }), 200
+
+            except Exception as e:
+                return jsonify({'error': f'Failed to scrape URL: {str(e)}'}), 500
+
+        # Option 2: Run full pipeline
+        elif data.get('mode') == 'pipeline':
+            from Regulations.production_aml_pipeline import ProductionAMLPipeline
+
+            logger.info("=== Running full regulation scraping pipeline ===")
+
+            max_docs = data.get('max_docs_per_regulator', 20)
+            target_regulators = data.get('regulators', ['MAS', 'FINMA', 'HKMA'])
+
+            # Validate parameters
+            if not isinstance(max_docs, int) or max_docs < 1 or max_docs > 100:
+                return jsonify({'error': 'max_docs_per_regulator must be between 1 and 100'}), 400
+
+            valid_regulators = ['MAS', 'FINMA', 'HKMA']
+            if not all(reg in valid_regulators for reg in target_regulators):
+                return jsonify({'error': f'Invalid regulator. Must be one of: {valid_regulators}'}), 400
+
+            logger.info(f"Scraping regulations: {target_regulators}, max_docs={max_docs}")
+
+            # Initialize pipeline
+            pipeline = ProductionAMLPipeline()
+
+            # Run scraping
+            results = pipeline.run_production_pipeline(max_docs_per_regulator=max_docs)
+
+            # Check if scraping succeeded
+            if not results or 'output_file' not in results:
+                return jsonify({
+                    'status': 'failed',
+                    'error': 'Scraping failed to produce output file',
+                    'details': results
+                }), 500
+
+            output_file = results['output_file']
+
+            # Auto-import if requested
+            import_results = None
+            if auto_import and os.path.exists(output_file):
+                logger.info("Auto-importing scraped regulations...")
+                try:
+                    from Regulations.simple_supabase_importer import SimpleAMLImporter
+                    importer = SimpleAMLImporter()
+                    import_results = importer.import_from_json(output_file)
+                    logger.info("Auto-import complete")
+                except Exception as e:
+                    logger.error(f"Auto-import failed: {e}")
+                    import_results = {'error': str(e)}
+
+            return jsonify({
+                'status': 'success',
+                'message': 'Regulations scraped successfully',
+                'scraping_results': {
+                    'output_file': output_file,
+                    'total_documents_processed': results.get('total_documents_processed', 0),
+                    'total_rules_extracted': results.get('total_rules_extracted', 0),
+                    'regulators': results.get('regulators', {}),
+                    'processing_time_seconds': results.get('processing_time_seconds', 0)
+                },
+                'import_results': import_results if auto_import else None,
+                'timestamp': datetime.now().isoformat()
+            }), 200
+
+        else:
+            return jsonify({
+                'error': 'Invalid request. Provide either "url" or "mode": "pipeline"'
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Regulation scraping error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/regulations/import', methods=['POST'])
+#@require_api_key
+def import_regulations():
+    """
+    Import regulatory rules from JSON file into Supabase
+
+    Request body (JSON):
+    {
+        "json_file_path": "path/to/rules.json"
+    }
+
+    Or upload file directly with form-data:
+    - file: JSON file upload
+    """
+    try:
+        from Regulations.simple_supabase_importer import SimpleAMLImporter
+
+        logger.info("=== Regulations import request ===")
+
+        # Check if file was uploaded
+        if 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({'error': 'No file selected'}), 400
+
+            if not file.filename.endswith('.json'):
+                return jsonify({'error': 'File must be a JSON file'}), 400
+
+            # Save temporarily
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+                file.save(temp_file.name)
+                json_file_path = temp_file.name
+
+        # Check if file path was provided in JSON body
+        elif request.is_json:
+            data = request.get_json()
+            json_file_path = data.get('json_file_path')
+
+            if not json_file_path:
+                return jsonify({'error': 'json_file_path is required'}), 400
+
+            if not os.path.exists(json_file_path):
+                return jsonify({'error': f'File not found: {json_file_path}'}), 404
+
+        else:
+            return jsonify({'error': 'Either upload a file or provide json_file_path in request body'}), 400
+
+        # Import regulations
+        importer = SimpleAMLImporter()
+        results = importer.import_from_json(json_file_path)
+
+        logger.info(f"Import complete: {results}")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Regulations imported successfully',
+            'statistics': {
+                'documents_imported': results.get('documents_imported', 0),
+                'rules_imported': results.get('rules_imported', 0),
+                'keywords_imported': results.get('keywords_imported', 0),
+                'errors': results.get('errors', [])
+            },
+            'timestamp': datetime.now().isoformat()
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Regulations import error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/regulations', methods=['GET'])
+#@require_api_key
+def get_regulations():
+    """
+    Get active regulatory rules from Supabase
+
+    Query parameters:
+    - source: Filter by regulation source (e.g., 'MAS', 'FINMA')
+    - category: Filter by category (e.g., 'cdd', 'kyc', 'sanctions')
+    - severity: Filter by severity level (e.g., 'critical', 'high')
+    - limit: Maximum number of rules to return (default: 100)
+    """
+    try:
+        source = request.args.get('source')
+        category = request.args.get('category')
+        severity = request.args.get('severity')
+        limit_val = int(request.args.get('limit', 100))
+
+        # Query rules using the complete view for full context
+        query = supabase.table('v_complete_rules').select('*')
+
+        if source:
+            query = query.eq('regulator_code', source)
+        if category:
+            query = query.eq('rule_type', category)
+        # Note: severity_level not in schema, so ignore this filter
+        # if severity:
+        #     query = query.eq('severity_level', severity)
+
+        query = query.limit(limit_val)
+
+        response = query.execute()
+
+        return jsonify({
+            'total_rules': len(response.data),
+            'rules': response.data,
+            'filters_applied': {
+                'source': source,
+                'category': category,
+                'severity': severity,
+                'limit': limit_val
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Regulations retrieval error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/regulations/<rule_id>', methods=['GET'])
+#@require_api_key
+def get_regulation_detail(rule_id):
+    """
+    Get detailed information about a specific regulatory rule
+    """
+    try:
+        response = supabase.table('aml_rules').select('*').eq('rule_id', rule_id).execute()
+
+        if not response.data:
+            return jsonify({'error': 'Rule not found'}), 404
+
+        return jsonify({
+            'rule': response.data[0]
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Regulation detail error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/regulations/check', methods=['POST'])
+#@require_api_key
+def check_transaction_regulations():
+    """
+    Check a single transaction against regulatory rules
+
+    Request body (JSON):
+    {
+        "transaction_id": "TXN001",
+        "amount": 5000000,
+        "currency": "USD",
+        "originator_country": "US",
+        "beneficiary_country": "RU",
+        "customer_is_pep": "Yes",
+        "customer_risk_rating": "high",
+        ...
+    }
+    """
+    try:
+        from utils.regulatory_checker import RegulatoryChecker
+
+        if not request.is_json:
+            return jsonify({'error': 'Request must be JSON'}), 400
+
+        transaction = request.get_json()
+
+        # Initialize checker
+        regulatory_checker = RegulatoryChecker(supabase)
+
+        # Check transaction
+        violations = regulatory_checker.check_transaction(transaction)
+
+        return jsonify({
+            'transaction_id': transaction.get('transaction_id', 'UNKNOWN'),
+            'violation_count': len(violations),
+            'violations': violations,
+            'summary': regulatory_checker.get_violation_summary(violations) if violations else None
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Regulation check error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
