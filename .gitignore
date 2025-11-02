@@ -135,7 +135,10 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
+.env.local
+.env.production
+.env.development
+.env.staging
 .envrc
 .venv
 env/
@@ -143,6 +146,24 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# AML Project Specific
+# API Keys and secrets
+secrets.json
+config.json
+credentials.json
+
+# PDF downloads and text files from scraping
+*.pdf
+*.txt
+mas_circulars/
+finma_circulars/
+hkma_circulars/
+
+# JSON results
+*_summary.json
+test_scrape_result*.json
+all_regulators_summary.json
 
 # Spyder project settings
 .spyderproject
