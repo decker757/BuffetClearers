@@ -296,15 +296,14 @@ class FraudScorer:
             alerts.append({
                 'rule': 'round_amount',
                 'severity': 'low',
-                'description': FraudScorer.ALERT_RULES['round_amount']['description'],
+                'description': self.ALERT_RULES['round_amount']['description'],
                 'value': float(amount),
-                'weight': FraudScorer.ALERT_RULES['round_amount']['weight']
+                'weight': self.ALERT_RULES['round_amount']['weight']
             })
 
         return alerts
 
-    @staticmethod
-    def get_risk_category(fraud_score):
+    def get_risk_category(self, fraud_score):
         """
         Categorize fraud risk score
 

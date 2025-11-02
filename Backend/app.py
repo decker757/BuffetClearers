@@ -627,6 +627,9 @@ def analyze_transactions():
         from utils.fraud_scoring import FraudScorer
         from utils.regulatory_checker import RegulatoryChecker
 
+        # Initialize fraud scorer with Supabase (loads dynamic rules)
+        fraud_scorer = FraudScorer(supabase_client=supabase)
+
         # Initialize regulatory checker
         regulatory_checker = RegulatoryChecker(supabase)
 
@@ -744,14 +747,14 @@ def analyze_transactions():
             iso_score = iso_results.loc[idx, 'anomaly_score'] if iso_results is not None else None
 
             # Check alert rules
-            alerts = FraudScorer.check_alert_rules(row)
+            alerts = fraud_scorer.check_alert_rules(row)
             all_alerts.extend(alerts)
 
             # Check regulatory compliance
             regulatory_violations = regulatory_checker.check_transaction(row.to_dict())
 
             # Calculate unified fraud score (boost if regulatory violations found)
-            fraud_score = FraudScorer.calculate_unified_fraud_score(xgb_prob, iso_score, alerts)
+            fraud_score = fraud_scorer.calculate_unified_fraud_score(xgb_prob, iso_score, alerts)
 
             # Boost fraud score for regulatory violations
             if regulatory_violations:
@@ -770,7 +773,7 @@ def analyze_transactions():
                 fraud_score = min(100, fraud_score)  # Cap at 100
 
             fraud_scores.append(fraud_score)
-            risk_category = FraudScorer.get_risk_category(fraud_score)
+            risk_category = fraud_scorer.get_risk_category(fraud_score)
 
             # Build enhanced transaction record
             enhanced_txn = {
