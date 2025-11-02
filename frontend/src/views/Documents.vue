@@ -41,45 +41,39 @@
       </div>
     </div>
 
-    <!-- Results Section -->
+    <!-- Results -->
     <div v-if="Object.keys(result).length" class="card shadow-sm p-4">
       <h6 class="fw-semibold mb-3 text-primary">Analysis Results</h6>
 
-      <div v-if="result.status" class="mb-2">
-        <strong>Status:</strong> {{ result.status }}
+      <div class="result-table">
+        <div
+          v-for="(value, key) in result"
+          :key="key"
+          class="result-row mb-2"
+        >
+          <strong class="text-capitalize">{{ formatKey(key) }}:</strong>
+          <span>
+            <template v-if="Array.isArray(value)">
+              <ul class="mt-1 mb-1">
+                <li v-for="(item, idx) in value" :key="idx">
+                  {{ formatValue(item) }}
+                </li>
+              </ul>
+            </template>
+            <template v-else-if="typeof value === 'object' && value !== null">
+              <ul class="mt-1 mb-1 ps-3">
+                <li v-for="(subVal, subKey) in value" :key="subKey">
+                  <strong>{{ formatKey(subKey) }}:</strong> {{ formatValue(subVal) }}
+                </li>
+              </ul>
+            </template>
+            <template v-else>
+              {{ formatValue(value) }}
+            </template>
+          </span>
+        </div>
       </div>
 
-      <div v-if="result.overall_risk_score !== undefined" class="mb-2">
-        <strong>Overall Risk Score:</strong> {{ result.overall_risk_score }}
-      </div>
-
-      <div v-if="result.authenticity_score !== undefined" class="mb-2">
-        <strong>Authenticity Score:</strong> {{ result.authenticity_score }}
-      </div>
-
-      <div v-if="result.summary" class="mb-3">
-        <strong>Summary:</strong>
-        <p class="mt-1">{{ result.summary }}</p>
-      </div>
-
-      <div v-if="result.key_findings && result.key_findings.length" class="mt-3">
-        <strong>Key Findings:</strong>
-        <ul class="mt-2">
-          <li v-for="(f, i) in result.key_findings" :key="i">{{ f }}</li>
-        </ul>
-      </div>
-
-      <div
-        v-if="result.recommendations && result.recommendations.length"
-        class="mt-3"
-      >
-        <strong>Recommendations:</strong>
-        <ul class="mt-2">
-          <li v-for="(r, i) in result.recommendations" :key="i">{{ r }}</li>
-        </ul>
-      </div>
-
-      <!-- Fallback JSON view -->
       <details class="mt-3">
         <summary class="fw-semibold">View Raw JSON Response</summary>
         <pre class="bg-light p-3 mt-2 rounded small">{{ prettyResult }}</pre>
@@ -99,10 +93,7 @@ const analyzing = ref(false);
 const progress = ref(0);
 const result = ref({});
 
-// Computed for pretty JSON display
-const prettyResult = computed(() => {
-  return JSON.stringify(result.value, null, 2);
-});
+const prettyResult = computed(() => JSON.stringify(result.value, null, 2));
 
 function handleFile(e) {
   const file = e.target.files[0];
@@ -110,6 +101,16 @@ function handleFile(e) {
   fileName.value = file.name;
   fileData.value = file;
   result.value = {};
+}
+
+function formatKey(key) {
+  return key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+}
+
+function formatValue(value) {
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return value.toFixed(2);
+  return value;
 }
 
 async function analyze() {
@@ -126,7 +127,6 @@ async function analyze() {
     const formData = new FormData();
     formData.append("file", fileData.value);
 
-    // Decide endpoint by file type
     const ext = fileName.value.toLowerCase().split(".").pop();
     const isImage = ["jpg", "jpeg", "png", "bmp", "tiff", "gif"].includes(ext);
     const endpoint = isImage
@@ -169,6 +169,14 @@ async function analyze() {
 .progress-bar {
   background-color: #0d6efd;
   transition: width 0.3s ease;
+}
+.result-table {
+  line-height: 1.6;
+}
+.result-row strong {
+  display: inline-block;
+  min-width: 180px;
+  color: #0d6efd;
 }
 pre {
   background: #f8f9fa;
